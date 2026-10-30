@@ -310,3 +310,76 @@ fn words(lines: &[String]) -> Vec<String> {
     words.dedup();
     words
 }
+
+/// A cursor in a comment must wrap the whole comment, not the line under it.
+///
+/// Reflowing one line out of a multi-line comment is the worst possible result:
+/// it leaves a long line above two short ones and calls it formatting.
+#[test]
+fn a_cursor_wraps_the_enclosing_comment() {
+    use rewrap_core::{File, Position, Selection, Settings};
+    let lines = [
+        "fn main() {",
+        "    // alpha beta gamma",
+        "    // delta epsilon zeta",
+        "    let x = 1;",
+        "}",
+    ];
+    let file = File {
+        language: "rust".into(),
+        path: "x.rs".into(),
+    };
+    let settings = Settings {
+        column: 30,
+        tab_width: 4,
+    };
+    // Cursor on the second comment line only.
+    let cursor = Selection {
+        anchor: Position {
+            line: 2,
+            character: 0,
+        },
+        active: Position {
+            line: 2,
+            character: 0,
+        },
+    };
+    let edit = rewrap_core::rewrap(&file, &settings, &[cursor], &lines);
+    assert!(!edit.is_empty());
+    assert_eq!(
+        edit.start_line, 1,
+        "the comment starts on the first comment line"
+    );
+    assert_eq!(edit.end_line, 2);
+    assert_eq!(
+        edit.lines,
+        vec!["    // alpha beta gamma delta", "    // epsilon zeta"]
+    );
+}
+
+/// A cursor in a line of code wraps nothing at all.
+#[test]
+fn a_cursor_on_code_does_nothing() {
+    use rewrap_core::{File, Position, Selection, Settings};
+    let lines = ["let alpha = beta_gamma_delta_epsilon_zeta_eta = 1;"];
+    let file = File {
+        language: "rust".into(),
+        path: "x.rs".into(),
+    };
+    let settings = Settings {
+        column: 20,
+        tab_width: 4,
+    };
+    let cursor = Selection {
+        anchor: Position {
+            line: 0,
+            character: 2,
+        },
+        active: Position {
+            line: 0,
+            character: 2,
+        },
+    };
+    let edit = rewrap_core::rewrap(&file, &settings, &[cursor], &lines);
+    assert!(edit.is_empty(), "code must be left alone: {:?}", edit.lines);
+}

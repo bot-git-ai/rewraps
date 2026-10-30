@@ -164,6 +164,15 @@ pub fn rewrap(file: &File, settings: &Settings, selections: &[Selection], lines:
     if start >= end {
         return Edit::empty();
     }
+    // A cursor is a request to wrap the thing at the cursor, not the one line
+    // under it. Reflowing a single line out of a three-line comment produces
+    // the worst possible result -- one long line above two short ones -- so the
+    // region grows to the enclosing comment or paragraph first.
+    let (start, end) = if start + 1 == end {
+        expand(file, lines, start)
+    } else {
+        (start, end)
+    };
     let region_lines = &lines[start..end];
     let chunks = match resolve(file) {
         Some(language) => process_language(language, settings, region_lines),
@@ -176,6 +185,88 @@ pub fn rewrap(file: &File, settings: &Settings, selections: &[Selection], lines:
 /// Lines that carry no prefix.
 fn plain(lines: &[&str]) -> Vec<Line> {
     lines.iter().map(|line| Line::new("", *line)).collect()
+}
+
+/// Grow a single-line region to the block that line belongs to.
+///
+/// Three shapes, in the order they can be decided: a comment that begins its
+/// line grows to its whole run (or to the block-comment markers around it); a
+/// line of prose grows to its blank-line-delimited paragraph; anything else --
+/// code -- stays exactly where it is, because wrapping code is not a thing this
+/// tool does.
+fn expand(file: &File, lines: &[&str], at: usize) -> (usize, usize) {
+    let line = lines[at];
+    if line.trim().is_empty() {
+        return (at, at + 1);
+    }
+    if let Some(language) = resolve(file) {
+        if !language.is_document() {
+            if let Some((first, last)) = comment_block(language, lines, at) {
+                return (first, last + 1);
+            }
+            // Not inside a comment: nothing to do to a line of code.
+            return (at, at + 1);
+        }
+    }
+    paragraph(lines, at)
+}
+
+/// The comment containing line `at`, if any.
+fn comment_block(language: &'static Language, lines: &[&str], at: usize) -> Option<(usize, usize)> {
+    let indent = crate::markdown::leading_whitespace(lines[at]);
+    let rest = &lines[at][indent.len()..];
+    let mut best: Option<&'static Comment> = None;
+    for comment in language.comments {
+        if comment.kind == Kind::String || !rest.starts_with(comment.start) {
+            continue;
+        }
+        if best.is_none_or(|current| comment.start.len() > current.start.len()) {
+            best = Some(comment);
+        }
+    }
+    let comment = best?;
+    let mut first = at;
+    let mut last = at;
+    match comment.kind {
+        Kind::Line => {
+            // A run of the same marker at the same indent is one comment.
+            while first > 0 && begins_comment(lines[first - 1], &indent, comment.start) {
+                first -= 1;
+            }
+            while last + 1 < lines.len() && begins_comment(lines[last + 1], &indent, comment.start)
+            {
+                last += 1;
+            }
+        }
+        _ => {
+            // A block comment: grow outwards to the lines holding its markers.
+            while first > 0 && !lines[first].contains(comment.start) {
+                first -= 1;
+            }
+            while last + 1 < lines.len() && !lines[last].contains(comment.end) {
+                last += 1;
+            }
+        }
+    }
+    Some((first, last))
+}
+
+fn begins_comment(line: &str, indent: &str, marker: &str) -> bool {
+    line.strip_prefix(indent)
+        .is_some_and(|rest| rest.starts_with(marker))
+}
+
+/// The blank-line-delimited paragraph containing `at`.
+fn paragraph(lines: &[&str], at: usize) -> (usize, usize) {
+    let mut first = at;
+    let mut last = at;
+    while first > 0 && !lines[first - 1].trim().is_empty() {
+        first -= 1;
+    }
+    while last + 1 < lines.len() && !lines[last + 1].trim().is_empty() {
+        last += 1;
+    }
+    (first, last + 1)
 }
 
 /// The half-open line range an operation covers.
