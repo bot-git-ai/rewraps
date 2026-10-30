@@ -93,21 +93,21 @@ dependencies = [
 
 [[package]]
 name = "rewrap-cli"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rewrap-core",
 ]
 
 [[package]]
 name = "rewrap-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "rewrap-wasm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "js-sys",
  "rewrap-core",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "rewrap-core",
  "serde_json",

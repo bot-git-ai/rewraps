@@ -3,7 +3,6 @@ crates/**
 languages/**
 target/**
 src/**
-!src/pkg/**
 scripts/**
 tests/**
 target/**
