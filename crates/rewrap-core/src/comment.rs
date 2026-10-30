@@ -123,19 +123,32 @@ fn line_run(
         // code sample inside a comment a code sample -- godoc treats an indented
         // line as code, and trimming here would reflow it into prose.
         let after = &rest[comment.start.len()..];
-        let after = after.strip_prefix(' ').unwrap_or(after).trim_end();
-        // An empty comment line keeps the marker and nothing else: emitting the
-        // separating space would leave trailing whitespace all over the file.
-        // The marker is emitted with exactly one space after it, even when the
-        // marker itself ends in one (`rem ` in batch files): repeating the
-        // marker's own trailing space would widen the comment on every wrap.
-        let marker = comment.start.trim_end();
-        let prefix = if after.is_empty() {
-            format!("{indent}{marker}")
-        } else {
-            format!("{indent}{marker} ")
+        // Remember whether a space separated the marker from the text, because
+        // it has to be put back only if it was there. A tab-indented godoc code
+        // sample (`//<tab>code`) is indented by that tab: adding a space turns
+        // it into `// <tab>code` and shifts the sample by a column. Every wrap
+        // did that, so a file that was already correct still came out modified
+        // -- and `--check` called it a change.
+        let (separated, body) = match after.strip_prefix(' ') {
+            Some(rest) => (true, rest),
+            None => (false, after),
         };
-        bodies.push(Line::new(prefix, after));
+        let body = body.trim_end();
+        // The marker is emitted without its own trailing space (`rem ` in batch
+        // files), and exactly one separator goes back: the marker's own space if
+        // it had one, or the one that was between it and the text. A marker
+        // followed directly by a tab keeps the tab and gains nothing, which is
+        // what stops a godoc code sample shifting by a column.
+        let marker = comment.start.trim_end();
+        let marker_had_space = comment.start.len() != marker.len();
+        // An empty comment line keeps the marker and nothing else, so no
+        // trailing whitespace is left behind.
+        let separator = if body.is_empty() || !(separated || marker_had_space) {
+            ""
+        } else {
+            " "
+        };
+        bodies.push(Line::new(format!("{indent}{marker}{separator}"), body));
         i += 1;
     }
     let body: Vec<Line> = bodies.into_iter().collect();
