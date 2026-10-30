@@ -95,14 +95,21 @@ async function askColumn (context: vscode.ExtensionContext, document: vscode.Tex
   return column
 }
 
-function wrapCommand (context: vscode.ExtensionContext, fixed?: number) {
+/** The wrap command.
+ *
+ * `alwaysAsk` is what distinguishes the two commands: "Wrap at Column..." exists
+ * precisely to override the configured column for one operation, so it must ask
+ * even when a ruler is set. "Wrap Selection or Comment" asks only when there is
+ * nothing to go on.
+ */
+function wrapCommand (context: vscode.ExtensionContext, alwaysAsk = false) {
   return async () => {
     const editor = vscode.window.activeTextEditor
     if (!editor) return
     loadEngine(context)
     const document = editor.document
-    const column = fixed ?? columnFor(document)
-      ?? await askColumn(context, document)
+    const configured = alwaysAsk ? undefined : columnFor(document)
+    const column = configured ?? await askColumn(context, document)
     if (column === undefined) {
       // Dismissed: do nothing, and say so rather than wrapping at a column the
       // user did not choose.
@@ -175,7 +182,7 @@ export function activate (context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.commands.registerCommand('rewraps.wrap', wrapCommand(context)),
-    vscode.commands.registerCommand('rewraps.wrapAt', wrapCommand(context)),
+    vscode.commands.registerCommand('rewraps.wrapAt', wrapCommand(context, true)),
     vscode.commands.registerCommand('rewraps.toggleAutoWrap', () => autoWrap.toggle()))
 
   context.subscriptions.push(
