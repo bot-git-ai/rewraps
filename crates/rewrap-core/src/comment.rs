@@ -126,10 +126,14 @@ fn line_run(
         let after = after.strip_prefix(' ').unwrap_or(after).trim_end();
         // An empty comment line keeps the marker and nothing else: emitting the
         // separating space would leave trailing whitespace all over the file.
+        // The marker is emitted with exactly one space after it, even when the
+        // marker itself ends in one (`rem ` in batch files): repeating the
+        // marker's own trailing space would widen the comment on every wrap.
+        let marker = comment.start.trim_end();
         let prefix = if after.is_empty() {
-            format!("{indent}{}", comment.start)
+            format!("{indent}{marker}")
         } else {
-            format!("{indent}{} ", comment.start)
+            format!("{indent}{marker} ")
         };
         bodies.push(Line::new(prefix, after));
         i += 1;

@@ -102,11 +102,10 @@ fn main() {
                         &format!("extension {extension:?} is not a usable suffix"),
                     );
                 }
-            } else if extension.contains('.') || extension.is_empty() {
-                fail(
-                    path,
-                    &format!("extension {extension:?} must be a .suffix or a bare file name"),
-                );
+            } else if extension.is_empty() || extension.contains(char::is_whitespace) {
+                // Anything not starting with a dot is an exact file name.
+                // `CMakeLists.txt` is one of those, so a dot is not disqualifying.
+                fail(path, &format!("{extension:?} is not a usable file name"));
             }
             if let Some(other) = owner.insert(extension.to_ascii_lowercase(), name.clone()) {
                 fail(

@@ -15,3 +15,6 @@ Makefile
 .gitignore
 tsconfig.json
 **/*.map
+wasm-bindgen-*
+*.tar.gz
+*.sha256sum

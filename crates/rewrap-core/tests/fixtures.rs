@@ -271,6 +271,11 @@ fn wrapping_is_idempotent() {
 
 /// No word may appear, vanish or change.
 ///
+/// The comparison is over *distinct* words, because a wrap legitimately repeats
+/// a comment marker: `// a b` on two lines contains `//` twice and the word
+/// `rem` twice for a batch file. Repeats are covered by the idempotence check
+/// instead.
+///
 /// A wrap moves line breaks and repeats comment markers, so a character-level
 /// comparison would trip over the markers themselves. Words are the unit that
 /// matters: if every word survives, the prose was re-flowed rather than edited.
@@ -302,5 +307,6 @@ fn words(lines: &[String]) -> Vec<String> {
         .filter(|word| !word.is_empty())
         .collect();
     words.sort();
+    words.dedup();
     words
 }

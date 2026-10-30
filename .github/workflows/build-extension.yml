@@ -34,7 +34,8 @@ jobs:
       - name: Install the wasm-bindgen generator
         run: |
           set -euo pipefail
-          version=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/,""); print $3}' Cargo.lock)
+          cd "$RUNNER_TEMP"
+          version=$(awk '/^name = "wasm-bindgen"$/{getline; gsub(/[",]/,""); print $3}' "$GITHUB_WORKSPACE/Cargo.lock")
           asset="wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz"
           base="https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${version}"
           curl -fsSL -o "$asset" "$base/$asset"

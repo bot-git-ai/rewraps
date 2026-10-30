@@ -87,10 +87,10 @@ overrides the setting per file.
 
 ## Supported languages
 
-Rust, TypeScript/JavaScript, Python, C, C++, CSS, HTML, Go, Kotlin, OCaml,
-Markdown and plain text, plus the marker families below. The full list is
-`cargo xtask coverage`, and the data lives in
-[`languages/`](languages) — one JSON file per language.
+57 languages, each with fixtures: Ada, Batch, C, C#, C++, CMake, CSS, Clojure, Common Lisp, D, Dockerfile, Elixir, Elm, F#, Go, GraphQL, Groovy, HTML, Haskell, INI, JSON, Java, Julia, Kotlin, LaTeX, Less, Lua, MATLAB, Makefile, Markdown, OCaml, Objective-C, PHP, Perl, PlainText, PowerShell, Prolog, Protobuf, PureScript, Python, R, Ruby, Rust, SCSS, SQL, Scala, Scheme, Shell, Svelte, Swift, TOML, TypeScript, Verilog, Vue, XAML, XML, YAML.
+
+`cargo xtask coverage` prints the table with its fixture count, and the data
+lives in [`languages/`](languages) — one JSON file per language.
 
 A file whose language is not in the table is treated as plain text: its
 paragraphs are wrapped and nothing else is touched. An unknown language never

@@ -284,31 +284,28 @@ fn coverage() {
         std::collections::BTreeMap::new();
     for file in fixtures() {
         let text = std::fs::read_to_string(&file).expect("read fixture");
-        let mut language = String::from("<none>");
         for line in text.lines() {
             if let Some((key, value)) = line.split_once('=') {
                 if key.trim() == "language" {
                     *by_language.entry(value.trim().to_string()).or_insert(0) += 1;
-                    language = value.trim().to_string();
                 }
             }
         }
-        let _ = language;
     }
-    let known = rewrap_core::languages();
-    println!("{:<14} {:>8}", "language", "cases");
-    for name in &known {
-        let key = name.to_ascii_lowercase();
-        let count = by_language.get(&key).copied().unwrap_or(0);
+    let names = rewrap_core::languages();
+    let ids = rewrap_core::language_ids();
+    println!("{:<16} {:<16} {:>7}", "language", "fixture id", "cases");
+    for (name, id) in names.iter().zip(&ids) {
+        let count = by_language.get(*id).copied().unwrap_or(0);
         let mark = if count == 0 { "  MISSING" } else { "" };
-        println!("{name:<14} {count:>8}{mark}");
+        println!("{name:<16} {id:<16} {count:>7}{mark}");
     }
     let missing: Vec<&String> = by_language
         .keys()
-        .filter(|k| !known.iter().any(|n| n.eq_ignore_ascii_case(k)))
+        .filter(|key| !ids.contains(&key.as_str()))
         .collect();
     if !missing.is_empty() {
-        println!("\nfixtures for unknown languages: {missing:?}");
+        println!("\nfixtures naming an unknown id: {missing:?}");
     }
     let total: usize = by_language.values().sum();
     println!("\n{total} cases across {} languages", by_language.len());
