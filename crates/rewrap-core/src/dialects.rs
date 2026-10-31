@@ -17,7 +17,16 @@ use crate::{Chunk, Line, Para, Settings};
 pub(crate) fn parse_body(dialect: Dialect, settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
     match dialect {
         Dialect::Verbatim => verbatim(lines),
-        Dialect::Markdown => crate::markdown::parse(settings, lines),
+        // Note: *not* `markdown::parse`. That is the whole-document classifier,
+        // and inside a comment it is wrong in a way that damages files: it
+        // re-reads the marker-stripped text as block Markdown, so a `# - item`
+        // list collapses into the paragraph above it, and the `#` of the next
+        // line ends up in the middle of a sentence. A comment's block structure
+        // is its markers, not its punctuation, so a comment body is paragraphs
+        // separated by blank lines -- with the decorator prefixes that are
+        // still meaningful (a list marker, a quote marker, an ordered item)
+        // carried onto continuation lines.
+        Dialect::Markdown => comment_text(settings, lines),
         Dialect::PlainText => plaintext(lines),
         Dialect::Godoc => grouped(settings, lines, is_indented),
         Dialect::Docstring => docstring(settings, lines),
@@ -34,7 +43,129 @@ pub(crate) fn parse_body(dialect: Dialect, settings: &Settings, lines: &[Line]) 
 
 /// Parse a whole document (Markdown file, plain-text file).
 pub(crate) fn parse_document(dialect: Dialect, settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
-    parse_body(dialect, settings, lines)
+    // A whole file *is* Markdown, so it gets the block classifier: headings,
+    // tables, fenced code, front matter. A comment body does not, and the
+    // difference matters -- routing a document through `parse_body` made every
+    // fenced block in a `.md` file get re-flowed.
+    match dialect {
+        Dialect::Markdown => crate::markdown::parse(settings, lines),
+        other => parse_body(other, settings, lines),
+    }
+}
+
+/// A comment body: paragraphs of text with their own prefixes kept.
+///
+/// Two prefixes per paragraph. `first` is the prefix of the paragraph's first
+/// line, so a `- item` keeps its marker and a `> quote` keeps its quote; `cont`
+/// is that prefix with the marker's own characters replaced by spaces, so a
+/// continuation line lines up under the text instead of under the marker.
+///
+/// A line must not *begin* a block, though: a fenced code sample or a table
+/// inside a comment is code the author wrote, and re-flowing it is not cosmetic
+/// damage. Those lines are emitted unchanged and are never part of a paragraph.
+fn comment_text(settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
+    let _ = settings;
+    let mut chunks = Vec::new();
+    let mut i = 0usize;
+    while i < lines.len() {
+        if lines[i].text.trim().is_empty() {
+            chunks.push(Chunk::Verbatim(vec![lines[i]
+                .prefix
+                .trim_end()
+                .to_string()]));
+            i += 1;
+            continue;
+        }
+        if crate::markdown::opens_a_block(&lines[i].text) {
+            // A fenced sample runs to its closing fence; any other block is just
+            // the lines it is made of. Either way it is emitted as written.
+            let start = i;
+            let fence = crate::markdown::fence_of(&lines[i].text);
+            i += 1;
+            while i < lines.len() && !lines[i].text.trim().is_empty() {
+                if let Some(closer) = fence {
+                    let trimmed = lines[i].text.trim();
+                    if trimmed.len() >= closer.1 && trimmed.chars().all(|c| c == closer.0) {
+                        i += 1;
+                        break;
+                    }
+                } else if crate::markdown::starts_a_block(&lines[i].text) {
+                    break;
+                }
+                i += 1;
+            }
+            chunks.push(Chunk::Verbatim(
+                lines[start..i].iter().map(Line::full).collect(),
+            ));
+            continue;
+        }
+        let prefix = lines[i].prefix.clone();
+        let text = lines[i].text.clone();
+        // The leading whitespace of the first line is part of the paragraph: it
+        // is what an indented docstring line is indented by, and what the
+        // continuation lines line up with.
+        let leading = text.len() - text.trim_start().len();
+        let marker = leading_marker(&text[leading..]);
+        let cont_indent = leading + marker.chars().count();
+        let first = format!("{prefix}{}", " ".repeat(leading));
+        let cont = format!("{prefix}{}", " ".repeat(cont_indent));
+        let mut para = Para::new(first, cont);
+        // The marker travels with the text: a `- ` or a `> ` is the paragraph's
+        // own, and repeating only the indent would delete it from the output.
+        para.push(text.get(leading..).unwrap_or(""));
+        i += 1;
+        while i < lines.len() && !lines[i].text.trim().is_empty() {
+            if crate::markdown::opens_a_block(&lines[i].text)
+                || !leading_marker(&lines[i].text).trim().is_empty()
+            {
+                break;
+            }
+            para.push(lines[i].text.trim());
+            i += 1;
+        }
+        chunks.push(Chunk::Para(para));
+    }
+    chunks
+}
+
+/// The prefix a paragraph's continuation lines align under.
+///
+/// Only the markers that mean something inside prose: a bullet, an ordered item
+/// (`1.`), a block quote. Anything else starts flush with the text, which is what
+/// a wrapped comment should look like.
+fn leading_marker(text: &str) -> String {
+    let trimmed = text.trim_start();
+    let indent = &text[..text.len() - trimmed.len()];
+    let mut rest = trimmed;
+    let mut marker = String::new();
+    // Nested quotes: `> > text`.
+    while let Some(after) = rest.strip_prefix('>') {
+        marker.push_str("> ");
+        rest = after.strip_prefix(' ').unwrap_or(after);
+    }
+    // A bullet, or an ordered item `1.` / `1)`.
+    for bullet in ["- ", "* ", "+ "] {
+        if rest.starts_with(bullet) {
+            marker.push_str(bullet);
+            return format!("{indent}{marker}");
+        }
+    }
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if !digits.is_empty() {
+        if let Some(after) = rest[digits.len()..].strip_prefix(['.', ')']) {
+            let after = after.strip_prefix(' ').unwrap_or(after);
+            let used =
+                digits.len() + 1 + usize::from(after.len() != rest[digits.len()..].len() - 1);
+            marker.push_str(&format!(
+                "{}{} ",
+                digits,
+                &rest[digits.len()..digits.len() + 1]
+            ));
+            let _ = used;
+            return format!("{indent}{marker}");
+        }
+    }
+    format!("{indent}{marker}")
 }
 
 fn verbatim(lines: &[Line]) -> Vec<Chunk> {
@@ -83,7 +214,7 @@ fn grouped(settings: &Settings, lines: &[Line], frozen: impl Fn(&Line) -> bool) 
             while i < lines.len() && !frozen(&lines[i]) {
                 i += 1;
             }
-            chunks.extend(crate::markdown::parse(settings, &lines[start..i]));
+            chunks.extend(comment_text(settings, &lines[start..i]));
         }
     }
     chunks
@@ -159,6 +290,23 @@ fn docstring(settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
 
 /// Which lines of a docstring must not be reflowed.
 fn classify_docstring(lines: &[Line]) -> Vec<bool> {
+    // "Indented" means indented past the body's own baseline, which is the
+    // indent of its first non-blank line. Absolute indentation is wrong here:
+    // the string's own indent is already in every line's prefix, so a body at
+    // column 4 and a literal block at column 8 differ only by their prefixes.
+    //
+    // Only the whitespace of a prefix counts: the first body line's prefix ends
+    // in the opening quotes, which are delimiter, not indentation.
+    let depth = |line: &Line| {
+        let prefix = line.prefix.len() - line.prefix.trim_start().len();
+        let text = line.text.len() - line.text.trim_start().len();
+        prefix + text
+    };
+    let baseline = lines
+        .iter()
+        .find(|line| !line.text.trim().is_empty())
+        .map_or(0, depth);
+    let indented = |line: &Line| depth(line) > baseline;
     let mut frozen = vec![false; lines.len()];
     let mut literal = false;
     let mut directive = false;
@@ -167,7 +315,7 @@ fn classify_docstring(lines: &[Line]) -> Vec<bool> {
         let text = line.text.as_str();
         let trimmed = text.trim_start();
         let blank = text.trim().is_empty();
-        let indented = is_indented(line);
+        let indented = indented(line);
 
         if blank {
             // A blank line belongs to whichever run it is inside; at the top
@@ -210,14 +358,14 @@ fn classify_docstring(lines: &[Line]) -> Vec<bool> {
 }
 
 /// Split a prose run into one paragraph per field-list entry (`:param x:`).
-fn field_list_blocks(_settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
+fn field_list_blocks(settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
     let mut chunks = Vec::new();
     let mut start = 0usize;
     for i in 1..=lines.len() {
         let is_field = i < lines.len() && is_field_list_entry(&lines[i].text);
         if i == lines.len() || is_field {
             if start < i {
-                chunks.extend(plaintext(&lines[start..i]));
+                chunks.extend(comment_text(settings, &lines[start..i]));
             }
             start = i;
         }

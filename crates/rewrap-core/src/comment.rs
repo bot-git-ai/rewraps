@@ -265,6 +265,11 @@ fn delimited(
     (chunks, i)
 }
 
+/// The leading whitespace of a line.
+fn leading_of(text: &str) -> &str {
+    &text[..text.len() - text.trim_start().len()]
+}
+
 /// Remove a body line's decoration character, if it has one.
 ///
 /// Only when the character stands alone or is followed by a space: ` * text` is
@@ -333,16 +338,18 @@ fn string_block(
         return Some((chunks, start + 1));
     }
 
-    let mut bodies = vec![Line::new(head.to_string(), after_open.trim_end())];
+    // Every body line keeps its own indentation, measured from the string's
+    // indent: a docstring's literal block and its doctests are indent-sensitive,
+    // and trimming here would turn the first into prose and lose the shared
+    // indent the second is written with.
+    let first_line = Line::new(String::new(), after_open);
+    let mut bodies = vec![first_line];
     let mut i = start + 1;
     let mut closed = false;
     while i < lines.len() {
         let line = lines[i];
         let relative = line.strip_prefix(indent.as_str()).unwrap_or(line);
         if let Some(close) = relative.find(comment.end) {
-            // A closing quote alone on its line ends the body; pushing the
-            // empty line it left behind would put a blank line inside the
-            // string, which changes its value and its documentation output.
             if !relative[..close].trim().is_empty() {
                 bodies.push(Line::new(String::new(), &relative[..close]));
             }
@@ -350,7 +357,7 @@ fn string_block(
             i += 1;
             break;
         }
-        bodies.push(Line::new(String::new(), relative.trim_end()));
+        bodies.push(Line::new(String::new(), relative));
         i += 1;
     }
     if !closed {
@@ -358,28 +365,32 @@ fn string_block(
         // than guessing where the author meant it to end.
         return None;
     }
-    let mut chunks = crate::dialects::parse_body(comment.dialect, settings, &bodies);
-    // The first block continues after the opening quotes on the same line; every
-    // later line lines up under the string's own indentation.
-    let mut seen_para = false;
-    for chunk in &mut chunks {
-        match chunk {
-            Chunk::Para(para) => {
-                if seen_para {
-                    para.first.clone_from(&indent);
-                }
-                seen_para = true;
-                para.cont.clone_from(&indent);
-            }
-            Chunk::Verbatim(lines) => {
-                for line in lines.iter_mut() {
-                    if !line.trim().is_empty() {
-                        line.insert_str(0, &indent);
-                    }
-                }
-            }
-            Chunk::Suffix(_) => {}
-        }
+
+    // Line 0 continues after the opening quotes; the rest are re-emitted under
+    // the string's own indent, so the body keeps the column it was written at.
+    let mut prefixed: Vec<Line> = Vec::with_capacity(bodies.len());
+    for (index, line) in bodies.into_iter().enumerate() {
+        // The first body line starts after the opening quotes, so it carries
+        // `head`; every later one carries the string's own indent. Either way
+        // the body's own leading whitespace is kept, which is what a literal
+        // block and a doctest are indented by.
+        let base = if index == 0 {
+            head.to_string()
+        } else {
+            indent.clone()
+        };
+        prefixed.push(Line::new(
+            format!("{base}{}", leading_of(&line.text)),
+            line.text.trim_start(),
+        ));
+    }
+    let mut chunks = crate::dialects::parse_body(comment.dialect, settings, &prefixed);
+    // The first paragraph's continuation lines line up under its text. The
+    // parser derived them from a prefix that ends in the opening quotes, and the
+    // quotes are the string's delimiter -- not a marker that repeats on every
+    // line, which would put `"""` in the middle of a sentence.
+    if let Some(Chunk::Para(para)) = chunks.first_mut() {
+        para.cont.clone_from(&indent);
     }
     chunks.push(Chunk::Verbatim(vec![format!("{indent}{}", comment.end)]));
     Some((chunks, i))
