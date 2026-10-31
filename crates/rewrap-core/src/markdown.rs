@@ -349,7 +349,7 @@ fn is_setext_underline(text: &str) -> bool {
     matches!(first, '=' | '-') && trimmed.chars().all(|c| c == first)
 }
 
-fn is_indented_code(text: &str) -> bool {
+pub(crate) fn is_indented_code(text: &str) -> bool {
     let (_, rest) = split_quotes(text);
     rest.starts_with("    ") || rest.starts_with('\t')
 }

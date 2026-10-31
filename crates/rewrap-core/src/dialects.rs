@@ -64,6 +64,17 @@ pub(crate) fn parse_document(dialect: Dialect, settings: &Settings, lines: &[Lin
 /// inside a comment is code the author wrote, and re-flowing it is not cosmetic
 /// damage. Those lines are emitted unchanged and are never part of a paragraph.
 fn comment_text(settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
+    comment_text_opt(settings, lines, true)
+}
+
+/// As [`comment_text`], but with a say over whether indentation means code.
+///
+/// In most comments it does: four spaces past the marker is a sample, and a
+/// sample must not be re-flowed. Inside a docstring it does not -- an indented
+/// line there is usually a hanging indent continuing the sentence above -- and
+/// the literal blocks that *are* code are the ones the guards already found
+/// (after `::`, under a directive).
+fn comment_text_opt(settings: &Settings, lines: &[Line], indent_is_code: bool) -> Vec<Chunk> {
     let _ = settings;
     let mut chunks = Vec::new();
     let mut i = 0usize;
@@ -76,7 +87,9 @@ fn comment_text(settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
             i += 1;
             continue;
         }
-        if crate::markdown::opens_a_block(&lines[i].text) {
+        if crate::markdown::opens_a_block(&lines[i].text)
+            && (indent_is_code || !crate::markdown::is_indented_code(&lines[i].text))
+        {
             // A fenced sample runs to its closing fence; any other block is just
             // the lines it is made of. Either way it is emitted as written.
             let start = i;
@@ -113,6 +126,10 @@ fn comment_text(settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
         // The marker travels with the text: a `- ` or a `> ` is the paragraph's
         // own, and repeating only the indent would delete it from the output.
         para.push(text.get(leading..).unwrap_or(""));
+        // Continuation lines line up at the deepest indent this paragraph uses:
+        // the first line's text offset, or further in when a following line is
+        // indented under it (a hanging indent).
+        let mut cont_indent = cont_indent;
         i += 1;
         while i < lines.len() && !lines[i].text.trim().is_empty() {
             if crate::markdown::opens_a_block(&lines[i].text)
@@ -120,9 +137,17 @@ fn comment_text(settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
             {
                 break;
             }
-            para.push(lines[i].text.trim());
+            // A hanging indent is the shape a definition or an explanation takes:
+            // a short first line with the rest indented under the text. New lines
+            // belong at the deepest indent the paragraph already uses, not at the
+            // first line's.
+            let line = &lines[i];
+            let leading_here = line.text.len() - line.text.trim_start().len();
+            cont_indent = cont_indent.max(leading_here);
+            para.push(line.text.trim());
             i += 1;
         }
+        para.cont = format!("{prefix}{}", " ".repeat(cont_indent));
         chunks.push(Chunk::Para(para));
     }
     chunks
@@ -143,26 +168,26 @@ fn leading_marker(text: &str) -> String {
         marker.push_str("> ");
         rest = after.strip_prefix(' ').unwrap_or(after);
     }
-    // A bullet, or an ordered item `1.` / `1)`.
-    for bullet in ["- ", "* ", "+ "] {
-        if rest.starts_with(bullet) {
-            marker.push_str(bullet);
-            return format!("{indent}{marker}");
+    // A bullet. The spaces after it are part of the marker: `-   text` aligns
+    // under `text`, and one space would put every continuation a column short.
+    for bullet in ['-', '*', '+'] {
+        if let Some(after) = rest.strip_prefix(bullet) {
+            let spaces = after.len() - after.trim_start().len();
+            if spaces > 0 {
+                return format!("{indent}{marker}{bullet}{}", " ".repeat(spaces));
+            }
         }
     }
+    // An ordered item: the digits, the `.` or `)`, and its spaces.
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
     if !digits.is_empty() {
-        if let Some(after) = rest[digits.len()..].strip_prefix(['.', ')']) {
-            let after = after.strip_prefix(' ').unwrap_or(after);
-            let used =
-                digits.len() + 1 + usize::from(after.len() != rest[digits.len()..].len() - 1);
-            marker.push_str(&format!(
-                "{}{} ",
-                digits,
-                &rest[digits.len()..digits.len() + 1]
-            ));
-            let _ = used;
-            return format!("{indent}{marker}");
+        let tail = &rest[digits.len()..];
+        if let Some(sep) = tail.chars().next().filter(|c| matches!(c, '.' | ')')) {
+            let after = &tail[1..];
+            let spaces = after.len() - after.trim_start().len();
+            if spaces > 0 {
+                return format!("{indent}{marker}{digits}{sep}{}", " ".repeat(spaces));
+            }
         }
     }
     format!("{indent}{marker}")
@@ -365,7 +390,9 @@ fn field_list_blocks(settings: &Settings, lines: &[Line]) -> Vec<Chunk> {
         let is_field = i < lines.len() && is_field_list_entry(&lines[i].text);
         if i == lines.len() || is_field {
             if start < i {
-                chunks.extend(comment_text(settings, &lines[start..i]));
+                // A docstring's prose is prose even when indented; the literal
+                // blocks and directives were already frozen above.
+                chunks.extend(comment_text_opt(settings, &lines[start..i], false));
             }
             start = i;
         }

@@ -110,6 +110,7 @@ fn a_hanging_indent_in_a_comment_is_kept() {
     // The shape a definition list or a numbered explanation takes: the second
     // line is indented under the first, and wrapping must not pull it back to
     // the marker's column.
+    // The hanging indent is the *second* line's, and the wrapper keeps it.
     let input = [
         "# 1. alpha beta gamma delta epsilon",
         "#    zeta eta theta iota kappa",
@@ -123,5 +124,35 @@ fn a_hanging_indent_in_a_comment_is_kept() {
             "#    iota kappa"
         ],
         "the hanging indent was lost: {out:?}"
+    );
+}
+#[test]
+fn a_hanging_indent_inside_a_docstring_is_kept() {
+    let input = [
+        "def f():",
+        "    \"\"\"",
+        "    2.  alpha beta gamma delta epsilon zeta eta theta iota kappa",
+        "            hanging line that is long enough to wrap somewhere else",
+        "    \"\"\"",
+    ];
+    let out = wrap("python", 40, &input);
+    assert_eq!(out[0], "def f():");
+    assert_eq!(out[1], "    \"\"\"", "the opening quotes are untouched");
+    assert_eq!(out.last().map(String::as_str), Some("    \"\"\""));
+    let body: Vec<&String> = out[2..out.len() - 1].iter().collect();
+    // The wrapped continuation of the hanging line keeps the hanging indent,
+    // which is the whole reason a docstring's own indentation is preserved.
+    assert!(
+        body.iter()
+            .any(|line| line.starts_with("            hanging")),
+        "the hanging indent was lost: {body:?}"
+    );
+    assert!(
+        body.iter().all(|line| line.len() <= 40),
+        "a body line is over the column: {body:?}"
+    );
+    assert!(
+        body.iter().all(|line| line.len() > 4),
+        "a body line lost its indentation: {body:?}"
     );
 }

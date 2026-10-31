@@ -265,11 +265,6 @@ fn delimited(
     (chunks, i)
 }
 
-/// The leading whitespace of a line.
-fn leading_of(text: &str) -> &str {
-    &text[..text.len() - text.trim_start().len()]
-}
-
 /// Remove a body line's decoration character, if it has one.
 ///
 /// Only when the character stands alone or is followed by a space: ` * text` is
@@ -379,17 +374,18 @@ fn string_block(
         } else {
             indent.clone()
         };
-        prefixed.push(Line::new(
-            format!("{base}{}", leading_of(&line.text)),
-            line.text.trim_start(),
-        ));
+        // The line's own indentation stays in its text, not in its prefix: it is
+        // what tells the paragraph where a hanging indent is, and a prefix that
+        // carries it cannot be measured against the string's own indent.
+        prefixed.push(Line::new(base, line.text));
     }
     let mut chunks = crate::dialects::parse_body(comment.dialect, settings, &prefixed);
-    // The first paragraph's continuation lines line up under its text. The
-    // parser derived them from a prefix that ends in the opening quotes, and the
-    // quotes are the string's delimiter -- not a marker that repeats on every
-    // line, which would put `"""` in the middle of a sentence.
-    if let Some(Chunk::Para(para)) = chunks.first_mut() {
+    // The opening quotes are the string's delimiter, not a marker that repeats:
+    // a continuation prefix derived from that line would put `"""` in the middle
+    // of a sentence. Continuation lines line up with the string's own indent.
+    if let Some(Chunk::Para(para)) = chunks.iter_mut().find(|chunk| {
+        matches!(chunk, Chunk::Para(para) if para.first.trim_end().ends_with(comment.start))
+    }) {
         para.cont.clone_from(&indent);
     }
     chunks.push(Chunk::Verbatim(vec![format!("{indent}{}", comment.end)]));
