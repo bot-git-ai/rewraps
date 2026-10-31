@@ -451,11 +451,12 @@ mod auto_wrap {
     fn a_real_overflow_pushes_a_word_down_and_takes_the_cursor_with_it() {
         let line = "// alpha beta gamma delta epsilon ";
         let (out, cursor) = type_at(&[line], 0, line.len() - 1, " ");
-        assert_eq!(out, vec!["// alpha beta gamma delta", "// epsilon"]);
+        // The typed space is kept: it is the separator before the next word.
+        assert_eq!(out, vec!["// alpha beta gamma delta", "// epsilon "]);
         assert_eq!(
             cursor,
-            Some((1, "// epsilon".len())),
-            "cursor must be after the word it pushed down"
+            Some((1, "// epsilon ".len())),
+            "cursor must be after the word it pushed down, past the space"
         );
     }
 
@@ -506,6 +507,138 @@ mod auto_wrap {
         assert_eq!((cursor.line, cursor.character), (1, " * epsilon".len()));
     }
 
+    /// The space that triggers a wrap must survive it.
+    ///
+    /// Reported from use: typing a space rewrapped and then *dropped* the space,
+    /// so the next keystroke welded itself onto the last word.
+    #[test]
+    fn the_space_that_triggered_the_wrap_is_kept() {
+        let line = "// alpha beta gamma delta epsilon ";
+        let (out, _) = type_at(&[line], 0, line.len() - 1, " ");
+        assert!(
+            out.last().is_some_and(|last| last.ends_with(' ')),
+            "the typed space vanished: {out:?}"
+        );
+        let last = out.last().expect("a line").clone();
+        let cursor = last.chars().count();
+        let after_typing = format!("{last}x");
+        assert_eq!(after_typing.chars().nth(cursor), Some('x'));
+        assert_eq!(
+            after_typing.chars().nth(cursor - 1),
+            Some(' '),
+            "no space before the new word"
+        );
+    }
+
+    /// A continuation line inside a block comment carries no marker of its own,
+    /// so nothing used to match it and typing did nothing at all.
+    #[test]
+    fn typing_inside_a_multi_line_block_comment_wraps_that_line() {
+        let file = File {
+            language: "typescript".into(),
+            path: "x.ts".into(),
+        };
+        let settings = Settings {
+            column: 30,
+            tab_width: 4,
+        };
+        let lines = ["/**", " * alpha beta gamma delta epsilon zeta ", " */"];
+        let edit = maybe_auto_wrap(
+            &file,
+            &settings,
+            " ",
+            Position {
+                line: 1,
+                character: lines[1].len() - 1,
+            },
+            &lines,
+        );
+        assert!(!edit.is_empty(), "typing in a block comment did nothing");
+        assert_eq!((edit.start_line, edit.end_line), (1, 1));
+        assert_eq!(
+            edit.lines,
+            vec![" * alpha beta gamma delta", " * epsilon zeta "],
+            "the continuation line is re-flowed with its own decoration"
+        );
+        let cursor = edit.selections.expect("cursor")[0].active;
+        // The wrap added a line, so the cursor is one below where it was typed.
+        assert_eq!(
+            (cursor.line, cursor.character),
+            (2, " * epsilon zeta ".len())
+        );
+    }
+
+    /// The line that closes the comment keeps the closing marker on its last
+    /// line rather than losing it.
+    #[test]
+    fn typing_on_the_closing_line_keeps_the_closing_marker() {
+        let file = File {
+            language: "typescript".into(),
+            path: "x.ts".into(),
+        };
+        let settings = Settings {
+            column: 30,
+            tab_width: 4,
+        };
+        let lines = ["/**", " * alpha beta gamma delta epsilon zeta */"];
+        let edit = maybe_auto_wrap(
+            &file,
+            &settings,
+            " ",
+            Position {
+                line: 1,
+                character: 35,
+            },
+            &lines,
+        );
+        assert!(!edit.is_empty(), "typing on the closing line did nothing");
+        assert_eq!(
+            edit.lines,
+            vec![" * alpha beta gamma delta", " * epsilon zeta */"]
+        );
+    }
+
+    /// The opening line of a block comment that runs on: only that line moves,
+    /// so the body below it is not rewritten behind the user's back.
+    #[test]
+    fn typing_on_an_opening_line_does_not_rewrite_the_lines_below_it() {
+        let file = File {
+            language: "typescript".into(),
+            path: "x.ts".into(),
+        };
+        let settings = Settings {
+            column: 40,
+            tab_width: 4,
+        };
+        let lines = [
+            "/** alpha beta gamma delta epsilon zeta and more words here ",
+            " * second line untouched",
+            " */",
+        ];
+        let edit = maybe_auto_wrap(
+            &file,
+            &settings,
+            " ",
+            Position {
+                line: 0,
+                character: lines[0].len() - 1,
+            },
+            &lines,
+        );
+        assert_eq!(
+            (edit.start_line, edit.end_line),
+            (0, 0),
+            "only the typed line"
+        );
+        assert_eq!(
+            edit.lines,
+            vec![
+                "/** alpha beta gamma delta epsilon zeta",
+                " * and more words here "
+            ]
+        );
+    }
+
     #[test]
     fn a_paste_is_not_auto_wrapped() {
         let line = "// alpha beta gamma delta epsilon zeta eta theta";
@@ -550,5 +683,109 @@ mod auto_wrap {
             "cursor belongs below the wrapped lines"
         );
         assert_eq!(cursor.character, 0);
+    }
+}
+
+/// A block comment must stay *one* block comment.
+///
+/// Wrapping `/** ... */` must produce a decorated continuation (` * ... */`),
+/// never a second `/**`: repeating the opening marker closes the first comment
+/// and starts another, which changes what the code means.
+mod block_comments_stay_one_block {
+    use rewrap_core::{maybe_auto_wrap, File, Position, Settings};
+
+    fn settings(column: i32) -> Settings {
+        Settings {
+            column,
+            tab_width: 4,
+        }
+    }
+
+    fn typescript() -> File {
+        File {
+            language: "typescript".into(),
+            path: "x.ts".into(),
+        }
+    }
+
+    #[test]
+    fn a_one_line_block_comment_wraps_into_a_decorated_continuation() {
+        let lines = ["/** alpha beta gamma delta epsilon zeta */"];
+        let edit = maybe_auto_wrap(
+            &typescript(),
+            &settings(30),
+            " ",
+            Position {
+                line: 0,
+                character: 40,
+            },
+            &lines,
+        );
+        assert_eq!(
+            edit.lines,
+            vec!["/** alpha beta gamma delta", " * epsilon zeta */"],
+            "a second /** would be a second comment"
+        );
+        assert_eq!(
+            edit.lines
+                .iter()
+                .filter(|line| line.contains("/**"))
+                .count(),
+            1,
+            "exactly one opening marker"
+        );
+    }
+
+    #[test]
+    fn typing_on_after_the_wrap_still_keeps_one_block() {
+        // The state after the wrap above, with more words typed at the end.
+        let lines = [
+            "/** alpha beta gamma delta",
+            " * epsilon zeta eta theta iota kappa */",
+        ];
+        let edit = maybe_auto_wrap(
+            &typescript(),
+            &settings(30),
+            " ",
+            Position {
+                line: 1,
+                character: 45,
+            },
+            &lines,
+        );
+        assert!(!edit.is_empty(), "the line was past the column");
+        assert_eq!(
+            edit.lines
+                .iter()
+                .filter(|line| line.contains("/**"))
+                .count(),
+            0,
+            "the continuation must not re-open the comment: {:?}",
+            edit.lines
+        );
+        assert!(edit.lines.last().is_some_and(|line| line.ends_with("*/")));
+    }
+
+    #[test]
+    fn a_rust_block_comment_stays_one_block_too() {
+        let rust = File {
+            language: "rust".into(),
+            path: "x.rs".into(),
+        };
+        let lines = ["/* alpha beta gamma delta epsilon zeta */"];
+        let edit = maybe_auto_wrap(
+            &rust,
+            &settings(30),
+            " ",
+            Position {
+                line: 0,
+                character: 42,
+            },
+            &lines,
+        );
+        assert_eq!(
+            edit.lines,
+            vec!["/* alpha beta gamma delta", " * epsilon zeta */"]
+        );
     }
 }

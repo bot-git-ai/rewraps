@@ -405,15 +405,60 @@ pub(crate) struct LineParts {
     pub suffix: String,
 }
 
-/// Split one line of a comment, if this line begins a comment that is complete
-/// on that line (or is a plain line comment).
+/// Split the line at `at` into the parts auto-wrap needs.
 ///
-/// A block comment that continues past this line is deliberately not handled:
-/// its text belongs to several source lines, and choosing which of them the
-/// cursor is in needs the whole block, not the line.
-pub(crate) fn single_line_parts(language: &Language, line: &str) -> Option<LineParts> {
+/// Three shapes, because a comment being typed in is not always complete on one
+/// line:
+///
+/// * the line **begins** a comment -- `// text`, `/** text */`, or `/** text`
+///   whose body continues below;
+/// * the line is a **continuation** inside a block comment -- ` * text`, which
+///   carries no opening marker of its own and used to match nothing at all, so
+///   typing in it did nothing;
+/// * anything else, which the caller handles.
+///
+/// `None` means "not a comment line": a docstring or a line of code.
+pub(crate) fn parts_for(language: &Language, lines: &[&str], at: usize) -> Option<LineParts> {
+    let line = *lines.get(at)?;
     let indent = crate::markdown::leading_whitespace(line);
     let rest = &line[indent.len()..];
+
+    if let Some(comment) = marker_at(language, rest) {
+        return Some(opening_parts(line, &indent, rest, comment));
+    }
+
+    let comment = enclosing_block(language, lines, at)?;
+    let body = &rest;
+    // A continuation line normally carries the decoration character
+    // (` * text`). When it does not, its own indentation is kept as the prefix
+    // and nothing is invented -- adding stars to a comment that has none would
+    // be a change nobody asked for.
+    let (content_start, cont) =
+        if !comment.decorate.is_empty() && body.starts_with(comment.decorate) {
+            let after = &body[comment.decorate.len()..];
+            let after = after.strip_prefix(' ').unwrap_or(after);
+            (
+                line.len() - after.len(),
+                format!("{indent}{} ", comment.decorate),
+            )
+        } else {
+            (indent.len(), format!("{indent} "))
+        };
+    let (content_end, suffix) = match line[content_start..].find(comment.end) {
+        Some(close) => (content_start + close, format!(" {}", comment.end)),
+        None => (line.len(), String::new()),
+    };
+    Some(LineParts {
+        content_start,
+        content_end,
+        first: line[..content_start].to_string(),
+        cont,
+        suffix,
+    })
+}
+
+/// The comment whose marker begins `rest`, longest marker first.
+fn marker_at(language: &Language, rest: &str) -> Option<&'static Comment> {
     let mut best: Option<&'static Comment> = None;
     for comment in language.comments {
         if comment.kind == Kind::String || !rest.starts_with(comment.start) {
@@ -428,7 +473,19 @@ pub(crate) fn single_line_parts(language: &Language, line: &str) -> Option<LineP
             best = Some(comment);
         }
     }
-    let comment = best?;
+    best
+}
+
+fn decoration(indent: &str, comment: &Comment) -> String {
+    if comment.decorate.is_empty() {
+        format!("{indent} ")
+    } else {
+        format!("{indent} {} ", comment.decorate)
+    }
+}
+
+/// Parts for a line whose own marker opens the comment.
+fn opening_parts(line: &str, indent: &str, rest: &str, comment: &'static Comment) -> LineParts {
     let after_start = &rest[comment.start.len()..];
     let (separated, body) = match after_start.strip_prefix(' ') {
         Some(rest) => (true, rest),
@@ -443,34 +500,83 @@ pub(crate) fn single_line_parts(language: &Language, line: &str) -> Option<LineP
     } else {
         ""
     };
-    let first_prefix = format!("{indent}{marker}{separator}");
+    let first = format!("{indent}{marker}{separator}");
+    let content_start = line.len() - body.len();
 
     match comment.kind {
-        Kind::Line => Some(LineParts {
-            content_start: line.len() - body.len(),
+        Kind::Line => LineParts {
+            content_start,
             content_end: line.len(),
-            first: first_prefix.clone(),
-            cont: first_prefix,
+            first: first.clone(),
+            cont: first,
             suffix: String::new(),
-        }),
-        _ => {
-            // A block comment that closes on this line only; the text stops
-            // before the closing marker, which is emitted separately.
-            let close = body.find(comment.end)?;
-            let cont_marker = if comment.decorate.is_empty() {
-                indent.clone()
-            } else {
-                format!("{indent} {} ", comment.decorate)
-            };
-            Some(LineParts {
-                content_start: line.len() - body.len(),
-                content_end: line.len() - body.len() + close,
-                first: first_prefix,
-                cont: cont_marker,
+        },
+        // A block comment that closes on this line, or opens on it and runs on.
+        // In the second case there is no closing marker to emit, and the lines
+        // below keep their own prefixes -- only this line is re-flowed.
+        _ => match body.find(comment.end) {
+            Some(close) => LineParts {
+                content_start,
+                content_end: content_start + close,
+                first,
+                cont: decoration(indent, comment),
                 suffix: format!(" {}", comment.end),
-            })
+            },
+            None => LineParts {
+                content_start,
+                content_end: line.len(),
+                first,
+                cont: decoration(indent, comment),
+                suffix: String::new(),
+            },
+        },
+    }
+}
+
+/// The block comment still open at line `at`, if the line is inside one.
+///
+/// Found by counting markers over the lines above: the last unmatched opening
+/// marker wins, and the longest marker wins a tie, so `/**` is not mistaken for
+/// `/*` in a language that has both.
+fn enclosing_block(language: &Language, lines: &[&str], at: usize) -> Option<&'static Comment> {
+    let mut best: Option<(usize, &'static Comment)> = None;
+    for comment in language.comments {
+        if comment.kind != Kind::Delimited {
+            continue;
+        }
+        let mut depth = 0usize;
+        let mut last_open = None;
+        for (index, line) in lines[..at].iter().enumerate() {
+            let mut position = 0usize;
+            while position < line.len() {
+                let rest = &line[position..];
+                if rest.starts_with(comment.start) {
+                    depth += 1;
+                    last_open = Some(index * 10_000 + position);
+                    position += comment.start.len();
+                    continue;
+                }
+                if depth > 0 && rest.starts_with(comment.end) {
+                    depth = depth.saturating_sub(1);
+                    position += comment.end.len();
+                    continue;
+                }
+                position += rest.chars().next().map_or(1, char::len_utf8);
+            }
+        }
+        if depth == 0 {
+            continue;
+        }
+        let Some(open) = last_open else { continue };
+        let better = best.is_none_or(|(best_open, best_comment)| {
+            open > best_open
+                || (open == best_open && comment.start.len() > best_comment.start.len())
+        });
+        if better {
+            best = Some((open, comment));
         }
     }
+    best.map(|(_, comment)| comment)
 }
 
 #[cfg(test)]

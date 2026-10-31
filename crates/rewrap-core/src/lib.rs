@@ -410,7 +410,7 @@ pub fn maybe_auto_wrap(
                 suffix: String::new(),
             })
         } else {
-            comment::single_line_parts(language, line)
+            comment::parts_for(language, lines, at.line)
         }
     });
 
@@ -426,6 +426,21 @@ pub fn maybe_auto_wrap(
         column,
         Some(cursor),
     );
+    // The space that triggered the wrap is kept when it was typed at the end of
+    // the text. Re-flowing drops trailing whitespace by design, but this space
+    // is the separator before the next word: dropping it welds the next
+    // keystroke onto the last word ("more" then "x" becomes "morex"). Not
+    // applied when a closing marker shares the line, where the space would have
+    // to go before a marker that already has one.
+    let keep_space = !newline
+        && typed_end >= parts.content_end
+        && parts.suffix.is_empty()
+        && line[..parts.content_end].ends_with(' ');
+    if keep_space {
+        if let Some(last) = out.last_mut() {
+            last.push(' ');
+        }
+    }
     if !parts.suffix.is_empty() {
         if let Some(last) = out.last_mut() {
             last.push_str(&parts.suffix);
@@ -434,7 +449,15 @@ pub fn maybe_auto_wrap(
     if out.len() == 1 && out[0] == line {
         return Edit::empty();
     }
-    let position = cursor_after(&out, at.line, position, newline, inserted);
+    // The kept space moves the cursor to the end of the last line, past it.
+    let position = if keep_space {
+        Position {
+            line: at.line + out.len().saturating_sub(1),
+            character: out.last().map_or(0, |line| line.chars().count()),
+        }
+    } else {
+        cursor_after(&out, at.line, position, newline, inserted)
+    };
     let mut edit = Edit::replace(at.line, at.line + 1, out);
     edit.selections = Some(vec![Selection {
         anchor: position,
