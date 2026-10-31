@@ -254,3 +254,140 @@ fn typing_in_a_docstring_wraps_it() {
         "cursor is not at the end of its text: {at:?}"
     );
 }
+
+/// Selecting part of a block comment or a docstring wraps it.
+///
+/// It did nothing: the selected lines carry no marker of their own, so on their
+/// own they are indistinguishable from code, and code is never wrapped. The
+/// selection now grows to the comment that contains it.
+mod selecting_part_of_a_block {
+    use rewrap_core::{File, Position, Selection, Settings};
+
+    fn settings() -> Settings {
+        Settings {
+            column: 40,
+            tab_width: 4,
+        }
+    }
+
+    fn select(
+        file: &str,
+        language: &str,
+        first: usize,
+        last: usize,
+        lines: &[&str],
+    ) -> Vec<String> {
+        let file = File {
+            language: language.into(),
+            path: file.into(),
+        };
+        let selection = Selection {
+            anchor: Position {
+                line: first,
+                character: 0,
+            },
+            active: Position {
+                line: last,
+                character: lines[last].chars().count(),
+            },
+        };
+        let edit = rewrap_core::rewrap(&file, &settings(), &[selection], lines);
+        if edit.is_empty() {
+            return lines.iter().map(|line| (*line).to_string()).collect();
+        }
+        // The edit replaces a range; the rest of the document is untouched, and
+        // the assertions below are about the whole document.
+        let mut out: Vec<String> = lines[..edit.start_line]
+            .iter()
+            .map(|line| (*line).to_string())
+            .collect();
+        out.extend(edit.lines);
+        out.extend(
+            lines[edit.end_line + 1..]
+                .iter()
+                .map(|line| (*line).to_string()),
+        );
+        out
+    }
+
+    #[test]
+    fn a_few_body_lines_of_a_docstring_are_wrapped() {
+        let lines = [
+            "def f():",
+            "    \"\"\"Summary.",
+            "    A body paragraph that is far too long to fit within the column at all.",
+            "    More body text here as well.",
+            "    \"\"\"",
+        ];
+        let out = select("x.py", "python", 2, 3, &lines);
+        assert!(
+            out.len() > lines.len(),
+            "the selection was not wrapped: {out:?}"
+        );
+        for line in &out {
+            assert!(
+                line.chars().count() <= 40 || line.split_whitespace().count() <= 1,
+                "over the column: {line:?} in {out:?}"
+            );
+        }
+        // "Summary." and the paragraph after it are one paragraph -- there is no
+        // blank line between them -- so the first output line legitimately
+        // continues with the following words. What matters is that the
+        // delimiters are untouched and the comment is still one comment.
+        assert!(out[0] == "def f():", "code above was touched: {out:?}");
+        assert_eq!(
+            out[1], "    \"\"\"Summary. A body paragraph that is",
+            "the opening quotes and first words are kept together: {out:?}"
+        );
+        assert_eq!(out.last().map(String::as_str), Some("    \"\"\""));
+    }
+
+    #[test]
+    fn the_lines_of_a_block_comment_are_wrapped() {
+        let lines = [
+            "/*",
+            " * A block comment body that is far too long to fit within the column.",
+            " */",
+        ];
+        let out = select("x.ts", "typescript", 1, 1, &lines);
+        assert!(out.len() > lines.len(), "nothing was wrapped: {out:?}");
+        assert_eq!(out[0], "/*");
+        assert_eq!(out.last().map(String::as_str), Some(" */"));
+        assert!(
+            out[1..out.len() - 1]
+                .iter()
+                .all(|line| line.trim_start().starts_with("* ")),
+            "body lines keep their decoration: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_selection_of_complete_comment_lines_is_not_widened() {
+        // Two `#` lines out of three: only those two are the user's business.
+        let lines = [
+            "# alpha beta gamma delta epsilon zeta eta theta",
+            "# second line that is also long enough to need wrapping here",
+            "# a third line the user did not select at all, long enough to wrap",
+        ];
+        let out = select("x.py", "python", 0, 1, &lines);
+        assert_eq!(
+            out.last().map(String::as_str),
+            Some(lines[2]),
+            "a line outside the selection was rewritten: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_selection_that_starts_at_the_opening_marker_is_left_as_chosen() {
+        let lines = [
+            "def f():",
+            "    \"\"\"A body line long enough to need wrapping at this column for sure.\"\"\"",
+        ];
+        let out = select("x.py", "python", 1, 1, &lines);
+        assert_eq!(out[0], "def f():");
+        assert!(
+            out.len() >= 2,
+            "the selected line should still wrap: {out:?}"
+        );
+    }
+}

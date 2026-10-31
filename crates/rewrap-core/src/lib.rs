@@ -171,7 +171,12 @@ pub fn rewrap(file: &File, settings: &Settings, selections: &[Selection], lines:
     let (start, end) = if start + 1 == end {
         expand(file, lines, start)
     } else {
-        (start, end)
+        // A selection inside a block comment or a docstring starts on a line
+        // with no marker of its own, so on its own it is indistinguishable from
+        // code and would be left alone. Grow it to the comment that contains it;
+        // a selection of complete comment lines is already wrap-able and is left
+        // exactly as chosen.
+        widen_inside_comment(file, lines, start, end)
     };
     let region_lines = &lines[start..end];
     let chunks = match resolve(file) {
@@ -185,6 +190,27 @@ pub fn rewrap(file: &File, settings: &Settings, selections: &[Selection], lines:
 /// Lines that carry no prefix.
 fn plain(lines: &[&str]) -> Vec<Line> {
     lines.iter().map(|line| Line::new("", *line)).collect()
+}
+
+/// Grow a selection that begins inside a comment to that comment's boundaries.
+///
+/// Only when the first selected line does not itself begin a comment: a
+/// selection of complete `//` lines, or one that starts at a `/*` or `"""`, is
+/// already something the parser can read, and widening it would wrap lines the
+/// user did not select.
+fn widen_inside_comment(file: &File, lines: &[&str], start: usize, end: usize) -> (usize, usize) {
+    let Some(language) = resolve(file) else {
+        return (start, end);
+    };
+    if language.is_document() || comment::opener_of(language, lines[start]).is_some() {
+        return (start, end);
+    }
+    match comment_block(language, lines, start) {
+        // The block must actually contain the selection; a line outside any
+        // comment stays where it is.
+        Some((first, last)) if first <= start && end - 1 <= last => (first, last + 1),
+        _ => (start, end),
+    }
 }
 
 /// Grow a single-line region to the block that line belongs to.

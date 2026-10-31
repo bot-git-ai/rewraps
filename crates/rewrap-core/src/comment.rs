@@ -183,6 +183,7 @@ fn delimited(
     let mut depth = 0usize;
     let mut first = true;
     let mut closed_on_own_line = false;
+    let mut written_close = String::new();
     let mut closed = false;
 
     while i < lines.len() {
@@ -208,6 +209,12 @@ fn delimited(
                     segment_end = at;
                     closed = true;
                     closed_on_own_line = text[..at].trim().is_empty();
+                    if closed_on_own_line {
+                        // The closing marker is re-emitted with the indentation it
+                        // was written with: ` */` aligned under ` * ` is the
+                        // shape nearly every block comment has.
+                        written_close = format!("{}{}", &text[..at], comment.end);
+                    }
                     break;
                 }
                 depth -= 1;
@@ -230,9 +237,9 @@ fn delimited(
                     format!("{open_prefix} ")
                 }
             } else if blank {
-                body_prefix.trim_end().to_string()
+                written_prefix(text, comment).trim_end().to_string()
             } else {
-                body_prefix.clone()
+                written_prefix(text, comment)
             };
             bodies.push(Line::new(prefix, body.trim_end()));
         }
@@ -249,20 +256,60 @@ fn delimited(
         i = lines.len();
     }
 
+    // Continuation lines take the prefix the body was written with. The first
+    // body line is the one after the opening marker; with none, the language's
+    // decoration character is the best guess there is.
+    let cont_prefix = bodies
+        .iter()
+        .skip(1)
+        .map(|line| line.prefix.clone())
+        // An indentation-only prefix is meaningful -- the body is indented under
+        // the marker -- so only a truly empty one is skipped.
+        .find(|prefix| !prefix.is_empty())
+        .unwrap_or_else(|| body_prefix.clone());
     let mut chunks = crate::dialects::parse_body(comment.dialect, settings, &bodies);
     for chunk in &mut chunks {
         if let Chunk::Para(para) = chunk {
-            para.cont.clone_from(&body_prefix);
+            para.cont.clone_from(&cont_prefix);
         }
     }
     if closed {
         if closed_on_own_line {
-            chunks.push(Chunk::Verbatim(vec![close_prefix]));
+            let close = if written_close.is_empty() {
+                close_prefix
+            } else {
+                written_close
+            };
+            chunks.push(Chunk::Verbatim(vec![close]));
         } else {
             chunks.push(Chunk::Suffix(format!(" {}", comment.end)));
         }
     }
     (chunks, i)
+}
+
+/// The prefix a body line was written with.
+///
+/// Taken from the line itself -- its indentation plus a decoration character if
+/// it has one -- rather than invented from the language's table. A block comment
+/// written `/* ... */` with no stars on its body lines must stay that way, and
+/// one written with ` * ` must keep them; the table only says what is *allowed*.
+fn written_prefix(text: &str, comment: &Comment) -> String {
+    let leading = crate::markdown::leading_whitespace(text);
+    let rest = &text[leading.len()..];
+    // A single decoration character followed by whitespace, or alone: that is a
+    // body prefix. `**bold**` is not -- there the character is content.
+    let decorate = if comment.decorate.is_empty() {
+        "*".to_string()
+    } else {
+        comment.decorate.to_string()
+    };
+    if let Some(after) = rest.strip_prefix(decorate.as_str()) {
+        if after.is_empty() || after.starts_with([' ', '\t']) {
+            return format!("{leading}{decorate} ");
+        }
+    }
+    leading.to_string()
 }
 
 /// Remove a body line's decoration character, if it has one.
@@ -272,16 +319,22 @@ fn delimited(
 /// character the author wrote.
 fn strip_decoration(segment: &str, decorate: &str) -> String {
     let trimmed = segment.trim_start();
-    if decorate.is_empty() {
-        return trimmed.to_string();
-    }
+    // The star is the conventional body marker even where the table does not
+    // name it: `/*` and `/**` bodies are written ` * text` in nearly every
+    // codebase, and leaving the star in the text would double it on every wrap.
+    let decorate = if decorate.is_empty() { "*" } else { decorate };
     let Some(rest) = trimmed.strip_prefix(decorate) else {
         return trimmed.to_string();
     };
+    // Only when the character stands alone or is followed by a space: `**bold**`
+    // is content, and stripping it would delete a character the author wrote.
     if rest.is_empty() {
         return String::new();
     }
-    rest.strip_prefix(' ').unwrap_or(rest).to_string()
+    if let Some(after) = rest.strip_prefix(' ') {
+        return after.to_string();
+    }
+    trimmed.to_string()
 }
 
 /// A string used as documentation (Python's triple quotes).
@@ -390,6 +443,12 @@ fn string_block(
     }
     chunks.push(Chunk::Verbatim(vec![format!("{indent}{}", comment.end)]));
     Some((chunks, i))
+}
+
+/// The comment whose marker begins this text, if any.
+pub(crate) fn opener_of(language: &Language, line: &str) -> Option<&'static Comment> {
+    let indent = crate::markdown::leading_whitespace(line);
+    marker_at(language, &line[indent.len()..])
 }
 
 /// How one line of a comment splits into marker, text and closing marker.
