@@ -529,22 +529,32 @@ pub fn maybe_auto_wrap(
     // The space that triggered the wrap is kept when it was typed at the end of
     // the text: it separates the next word, and dropping it welds the next
     // keystroke onto the current one.
-    let last_source = lines[end - 1];
+    // What matters is that the space was typed at the end of the line's *text*,
+    // not that the line is the last of the region: a docstring's region ends at
+    // its closing quotes, one line below the text being typed.
+    let typed_line = lines[at.line];
     let typed_at_end = !newline
-        && at.line == end - 1
-        && typed_end >= last_source.trim_end().chars().count()
-        && last_source[..typed_end.min(last_source.len())].ends_with(' ');
+        && typed_end >= typed_line.trim_end().chars().count()
+        && typed_line[..typed_end.min(typed_line.len())].ends_with(' ');
+    // The space goes on the last line of *text*: for a docstring that is the line
+    // above its closing quotes, not the quotes themselves. For a block comment
+    // that closed on the typed line it is that line, and there the space would be
+    // trailing whitespace on a finished comment, so it is dropped.
+    let mut space_at: Option<usize> = None;
     if typed_at_end {
-        if let Some(last) = edit.lines.last_mut() {
-            // Not after a closing marker: a space there is trailing whitespace on
-            // a finished comment, which a formatter removes rather than adds.
-            let closes = resolve(file).is_some_and(|language| {
-                language.comments.iter().any(|comment| {
-                    !comment.end.is_empty() && last.trim_end().ends_with(comment.end)
-                })
-            });
-            if !closes && !last.ends_with(' ') {
-                last.push(' ');
+        if let Some(index) = edit
+            .lines
+            .iter()
+            .rposition(|line| !line.trim().is_empty() && !is_closing_only(file, line))
+        {
+            let line = &mut edit.lines[index];
+            if ends_with_closing_marker(file, line) {
+                // Nothing to add, and nothing to point at.
+            } else {
+                if !line.ends_with(' ') {
+                    line.push(' ');
+                }
+                space_at = Some(index);
             }
         }
     }
@@ -554,10 +564,10 @@ pub fn maybe_auto_wrap(
             line: at.line + edit.lines.len(),
             character: inserted.chars().skip(1).take_while(|c| *c == ' ').count(),
         }
-    } else if typed_at_end {
+    } else if let Some(index) = space_at {
         Position {
-            line: start + edit.lines.len().saturating_sub(1),
-            character: edit.lines.last().map_or(0, |line| line.chars().count()),
+            line: start + index,
+            character: edit.lines[index].chars().count(),
         }
     } else {
         let found = find_text_position(language, &edit.lines, start, seen);
@@ -683,6 +693,28 @@ fn find_text_position(
         start + last,
         out.get(last).map_or(0, |line| line.chars().count()),
     )
+}
+
+/// Whether this output line is nothing but a comment's closing marker.
+fn is_closing_only(file: &File, line: &str) -> bool {
+    let trimmed = line.trim();
+    resolve(file).is_some_and(|language| {
+        language
+            .comments
+            .iter()
+            .any(|comment| !comment.end.is_empty() && trimmed == comment.end)
+    })
+}
+
+/// Whether this output line already ends with a comment's closing marker.
+fn ends_with_closing_marker(file: &File, line: &str) -> bool {
+    let trimmed = line.trim_end();
+    resolve(file).is_some_and(|language| {
+        language
+            .comments
+            .iter()
+            .any(|comment| !comment.end.is_empty() && trimmed.ends_with(comment.end))
+    })
 }
 
 /// Where the cursor goes once the line has been wrapped.

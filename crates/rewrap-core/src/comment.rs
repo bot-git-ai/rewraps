@@ -548,7 +548,12 @@ fn opening_parts(line: &str, indent: &str, rest: &str, comment: &'static Comment
 pub(crate) fn open_at(language: &Language, lines: &[&str], at: usize) -> Option<&'static Comment> {
     let mut best: Option<(usize, &'static Comment)> = None;
     for comment in language.comments {
-        if comment.kind != Kind::Delimited {
+        // A delimited comment and a docstring are both blocks: they open once,
+        // they can span lines, and everything between the markers is theirs. The
+        // only difference is that a string's body is a literal, which matters to
+        // the wrapping and not to finding it. Strings used to be skipped here,
+        // which is why typing inside a docstring did nothing at all.
+        if !matches!(comment.kind, Kind::Delimited | Kind::String) {
             continue;
         }
         let mut depth = 0usize;
@@ -558,6 +563,10 @@ pub(crate) fn open_at(language: &Language, lines: &[&str], at: usize) -> Option<
             while position < line.len() {
                 let rest = &line[position..];
                 if rest.starts_with(comment.start) {
+                    // A docstring's opening quotes and its closing quotes are the
+                    // same characters, and a one-line string opens and closes on
+                    // the same line. Counting in order handles both: the opener
+                    // is seen first, and its own closer later on the same line.
                     depth += 1;
                     last_open = Some(index * 10_000 + position);
                     position += comment.start.len();

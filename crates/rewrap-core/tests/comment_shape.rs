@@ -196,3 +196,61 @@ fn no_space_after_a_closing_marker() {
         );
     }
 }
+
+/// Typing at the end of a docstring body wraps the docstring.
+///
+/// It did nothing at all: the enclosing-block search skipped string comments, so
+/// a body line belonged to no comment, and a line of "code" is never wrapped.
+#[test]
+fn typing_in_a_docstring_wraps_it() {
+    use rewrap_core::{maybe_auto_wrap, File, Position};
+    let file = File {
+        language: "python".into(),
+        path: "x.py".into(),
+    };
+    let settings = Settings {
+        column: 40,
+        tab_width: 4,
+    };
+    let body =
+        "    2. maybe_auto_wrap has no automated tests at all. I checked: zero tests and soeafasd";
+    let typed = format!("{body} ");
+    let lines = ["def f():", "    \"\"\"", typed.as_str(), "    \"\"\""];
+    let edit = maybe_auto_wrap(
+        &file,
+        &settings,
+        " ",
+        Position {
+            line: 2,
+            character: body.len(),
+        },
+        &lines,
+    );
+    assert!(!edit.is_empty(), "typing in a docstring did nothing");
+    assert_eq!(edit.lines[0], "def f():");
+    assert_eq!(
+        edit.lines[1], "    \"\"\"",
+        "the opening quotes are untouched"
+    );
+    assert_eq!(
+        edit.lines.last().map(String::as_str),
+        Some("    \"\"\""),
+        "the closing quotes stay on their own line"
+    );
+    assert_eq!(
+        edit.lines.join("\n").matches("\"\"\"").count(),
+        2,
+        "one docstring, not two"
+    );
+    let cursor = edit.selections.expect("cursor")[0].active;
+    let at = &edit.lines[cursor.line];
+    assert!(
+        !at.trim().starts_with("\"\"\""),
+        "cursor landed on the quotes: {at:?}"
+    );
+    assert_eq!(
+        at.chars().count(),
+        cursor.character,
+        "cursor is not at the end of its text: {at:?}"
+    );
+}
