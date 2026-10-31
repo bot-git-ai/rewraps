@@ -385,6 +385,46 @@ fn string_block(
     Some((chunks, i))
 }
 
+/// Where a line comment's text begins, and the prefix to put on every line.
+///
+/// Exposed for auto-wrap, which wraps a single line while typing and has to know
+/// which part of it is marker and which is text: the cursor offset it is given
+/// counts from the start of the line, including the marker.
+pub(crate) fn line_comment_parts(language: &Language, line: &str) -> Option<(usize, String)> {
+    let indent = crate::markdown::leading_whitespace(line);
+    let rest = &line[indent.len()..];
+    let mut best: Option<&'static Comment> = None;
+    for comment in language.comments {
+        if comment.kind != Kind::Line || !rest.starts_with(comment.start) {
+            continue;
+        }
+        if let Some(next) = comment.not_followed_by.chars().next() {
+            if rest[comment.start.len()..].starts_with(next) {
+                continue;
+            }
+        }
+        if best.is_none_or(|current| comment.start.len() > current.start.len()) {
+            best = Some(comment);
+        }
+    }
+    let comment = best?;
+    let after = &rest[comment.start.len()..];
+    let (separated, body) = match after.strip_prefix(' ') {
+        Some(rest) => (true, rest),
+        None => (false, after),
+    };
+    let marker = comment.start;
+    let marker_had_space = marker.len() != marker.trim_end().len();
+    let separator = if separated || marker_had_space {
+        " "
+    } else {
+        ""
+    };
+    let prefix = format!("{indent}{}{separator}", marker.trim_end());
+    let start = line.len() - body.len();
+    Some((start, prefix))
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{File, Settings};

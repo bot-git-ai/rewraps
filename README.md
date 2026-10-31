@@ -61,8 +61,13 @@ at a column nobody chose is how text ends up at 80 by accident.
 
 Dismissing that prompt does nothing at all — no wrap, no default.
 
-Auto-wrap never asks. It wraps only when typing carries a line past the column,
-and does nothing when there is no column to wrap at.
+Auto-wrap never asks. When the file has no ruler of its own it uses **80**, so it
+works out of the box: a prompt cannot appear while you are typing, and doing
+nothing would mean auto-wrap silently never fired. Explicit wrap still asks,
+because there the question can be answered.
+
+When a wrap happens, the cursor moves with the text — it ends up after the word
+that was pushed onto the new line, not stranded at the end of the shortened one.
 
 ### Auto-wrap
 
@@ -77,7 +82,8 @@ overrides the setting per file.
 - **No ruler cycling.** Rewrap moves to the next ruler when you wrap twice in a
   row. Here the first ruler is the column, always: the same command should do
   the same thing every time.
-- **A prompt instead of a silent 80** when no column is configured.
+- **A prompt instead of a silent 80** for an explicit wrap when no column is
+  configured. Auto-wrap, which cannot prompt, uses 80.
 - **A single-line Python string is never split.** Splitting `"""SELECT 1"""`
   inserts a newline into the value; only multi-line strings are wrapped.
 - **Fewer settings.** No double-sentence spacing, no "reformat" mode, no

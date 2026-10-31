@@ -382,16 +382,90 @@ pub fn maybe_auto_wrap(
         return Edit::empty();
     }
     let line = lines[at.line];
-    let up_to = if newline {
+    // The document already contains the insertion, so the cursor sits at the
+    // end of what was typed.
+    let typed_end = if newline {
         at.character
     } else {
-        at.character + inserted.len()
+        at.character + inserted.chars().count()
     };
-    let head: String = line.chars().take(up_to).collect();
+    let head: String = line.chars().take(typed_end).collect();
     if settings.width(0, &head) <= column {
         return Edit::empty();
     }
-    // Wrap just this line, by selecting it.
+
+    // A line comment, or a prose line, is wrapped in place: the content is
+    // everything after the marker and the prefix is put back on every line,
+    // which is what lets the cursor be tracked through the break. Anything else
+    // -- a block comment, a docstring, a line of code -- falls back to wrapping
+    // the line as a region and leaving the cursor at the end of it.
+    let marker_parts = resolve(file).and_then(|language| {
+        if language.is_document() {
+            Some((0usize, String::new()))
+        } else {
+            comment::line_comment_parts(language, line)
+        }
+    });
+
+    let Some((content_start, prefix)) = marker_parts else {
+        return fallback_auto_wrap(file, settings, lines, at, newline, inserted);
+    };
+
+    let content = &line[content_start..];
+    let cursor = typed_end.saturating_sub(line[..content_start].chars().count());
+    let (out, position) = settings.fill_tracked(content, &prefix, &prefix, column, Some(cursor));
+    if out.len() == 1 && out[0] == line {
+        return Edit::empty();
+    }
+    let mut edit = Edit::replace(at.line, at.line + 1, out.clone());
+    edit.selections = Some(vec![Selection {
+        anchor: cursor_after(&out, at.line, position, newline, inserted),
+        active: cursor_after(&out, at.line, position, newline, inserted),
+    }]);
+    edit
+}
+
+/// Where the cursor goes once the line has been wrapped.
+///
+/// For a typed space the answer is the position the fill tracked, on whichever
+/// line the word now ends. For a newline the cursor was already on the next
+/// line before the wrap ran, so it moves down by however many lines the wrap
+/// added -- ending up below the text it just pushed.
+fn cursor_after(
+    out: &[String],
+    line: usize,
+    position: Option<(usize, usize)>,
+    newline: bool,
+    inserted: &str,
+) -> Position {
+    if newline {
+        let indent = inserted.chars().skip(1).take_while(|c| *c == ' ').count();
+        return Position {
+            line: line + out.len(),
+            character: indent,
+        };
+    }
+    let (offset, column) = position.unwrap_or((out.len().saturating_sub(1), 0));
+    Position {
+        line: line + offset,
+        character: column,
+    }
+}
+
+/// Auto-wrap for a line the tracked path cannot handle.
+///
+/// Wrapping the whole line as a region still fixes the overflow, which is the
+/// point of auto-wrap; the cursor is put at the end of the wrapped text rather
+/// than tracked, because the prefixes there are the block comment's decoration
+/// and not a plain marker.
+fn fallback_auto_wrap(
+    file: &File,
+    settings: &Settings,
+    lines: &[&str],
+    at: Position,
+    newline: bool,
+    inserted: &str,
+) -> Edit {
     let selection = Selection {
         anchor: Position {
             line: at.line,
@@ -399,25 +473,15 @@ pub fn maybe_auto_wrap(
         },
         active: Position {
             line: at.line,
-            character: line.chars().count(),
+            character: lines[at.line].chars().count(),
         },
     };
     let mut edit = rewrap(file, settings, &[selection], lines);
     if !edit.is_empty() {
-        let after = if newline {
-            Position {
-                line: at.line + 1,
-                character: inserted.chars().skip(1).take_while(|c| *c == ' ').count(),
-            }
-        } else {
-            Position {
-                line: at.line,
-                character: at.character + inserted.len(),
-            }
-        };
+        let position = cursor_after(&edit.lines, at.line, None, newline, inserted);
         edit.selections = Some(vec![Selection {
-            anchor: after,
-            active: after,
+            anchor: position,
+            active: position,
         }]);
     }
     edit
