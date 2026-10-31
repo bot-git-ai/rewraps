@@ -536,7 +536,14 @@ pub fn maybe_auto_wrap(
         && last_source[..typed_end.min(last_source.len())].ends_with(' ');
     if typed_at_end {
         if let Some(last) = edit.lines.last_mut() {
-            if !last.ends_with(' ') {
+            // Not after a closing marker: a space there is trailing whitespace on
+            // a finished comment, which a formatter removes rather than adds.
+            let closes = resolve(file).is_some_and(|language| {
+                language.comments.iter().any(|comment| {
+                    !comment.end.is_empty() && last.trim_end().ends_with(comment.end)
+                })
+            });
+            if !closes && !last.ends_with(' ') {
                 last.push(' ');
             }
         }

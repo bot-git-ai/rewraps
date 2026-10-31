@@ -156,3 +156,43 @@ fn a_hanging_indent_inside_a_docstring_is_kept() {
         "a body line lost its indentation: {body:?}"
     );
 }
+
+/// A wrap must never leave a space after a comment's closing marker.
+///
+/// Typing past the column on the last line of a block comment is an ordinary
+/// thing to do, and the space that triggered the wrap belongs before the text --
+/// after `*/` it is trailing whitespace on a finished comment.
+#[test]
+fn no_space_after_a_closing_marker() {
+    use rewrap_core::{maybe_auto_wrap, File, Position};
+    let file = File {
+        language: "typescript".into(),
+        path: "x.ts".into(),
+    };
+    let lines = [
+        "/**",
+        " * alpha beta gamma delta",
+        " * epsilon zeta theta kappa lambda  */ ",
+    ];
+    let edit = maybe_auto_wrap(
+        &file,
+        &Settings {
+            column: 30,
+            tab_width: 4,
+        },
+        " ",
+        Position {
+            line: 2,
+            character: 43,
+        },
+        &lines,
+    );
+    assert!(!edit.is_empty(), "the line was past the column");
+    for line in &edit.lines {
+        assert!(
+            !line.trim_end().ends_with("*/ ") && !line.ends_with("*/ "),
+            "trailing space after the closing marker: {line:?} in {:?}",
+            edit.lines
+        );
+    }
+}
