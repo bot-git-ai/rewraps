@@ -533,7 +533,7 @@ mod auto_wrap {
     /// A continuation line inside a block comment carries no marker of its own,
     /// so nothing used to match it and typing did nothing at all.
     #[test]
-    fn typing_inside_a_multi_line_block_comment_wraps_that_line() {
+    fn typing_inside_a_multi_line_block_comment_wraps_the_whole_block() {
         let file = File {
             language: "typescript".into(),
             path: "x.ts".into(),
@@ -554,17 +554,25 @@ mod auto_wrap {
             &lines,
         );
         assert!(!edit.is_empty(), "typing in a block comment did nothing");
-        assert_eq!((edit.start_line, edit.end_line), (1, 1));
         assert_eq!(
-            edit.lines,
-            vec![" * alpha beta gamma delta", " * epsilon zeta "],
-            "the continuation line is re-flowed with its own decoration"
+            (edit.start_line, edit.end_line),
+            (0, 2),
+            "the whole block is the unit, not the typed line"
         );
-        let cursor = edit.selections.expect("cursor")[0].active;
-        // The wrap added a line, so the cursor is one below where it was typed.
+        assert_eq!(edit.lines[0], "/**", "the opening line is kept");
         assert_eq!(
-            (cursor.line, cursor.character),
-            (2, " * epsilon zeta ".len())
+            edit.lines
+                .iter()
+                .filter(|line| line.contains("/**"))
+                .count(),
+            1,
+            "still one comment"
+        );
+        assert!(edit.lines.join("\n").trim_end().ends_with("*/"));
+        assert!(
+            edit.lines.join(" ").contains("zeta"),
+            "the typed word survives: {:?}",
+            edit.lines
         );
     }
 
@@ -592,27 +600,26 @@ mod auto_wrap {
             &lines,
         );
         assert!(!edit.is_empty(), "typing on the closing line did nothing");
-        assert_eq!(
-            edit.lines,
-            vec![" * alpha beta gamma delta", " * epsilon zeta */"]
-        );
+        let text = edit.lines.join("\n");
+        assert!(text.trim_end().ends_with("*/"), "still closed: {text}");
+        assert_eq!(text.matches("/**").count(), 1, "still one comment: {text}");
     }
 
-    /// The opening line of a block comment that runs on: only that line moves,
-    /// so the body below it is not rewritten behind the user's back.
+    /// The opening line of a block comment that runs on wraps the whole block:
+    /// a comment is the unit, and its body keeps whatever shape it had.
     #[test]
-    fn typing_on_an_opening_line_does_not_rewrite_the_lines_below_it() {
+    fn typing_on_an_opening_line_wraps_the_whole_block_and_keeps_it_one_comment() {
         let file = File {
             language: "typescript".into(),
             path: "x.ts".into(),
         };
         let settings = Settings {
-            column: 40,
+            column: 30,
             tab_width: 4,
         };
         let lines = [
             "/** alpha beta gamma delta epsilon zeta and more words here ",
-            " * second line untouched",
+            " * second line of the same comment",
             " */",
         ];
         let edit = maybe_auto_wrap(
@@ -625,18 +632,39 @@ mod auto_wrap {
             },
             &lines,
         );
+        let text = edit.lines.join("\n");
         assert_eq!(
-            (edit.start_line, edit.end_line),
-            (0, 0),
-            "only the typed line"
+            text.matches("/**").count(),
+            1,
+            "still one comment: {:?}",
+            edit.lines
         );
-        assert_eq!(
-            edit.lines,
-            vec![
-                "/** alpha beta gamma delta epsilon zeta",
-                " * and more words here "
-            ]
-        );
+        assert!(text.trim_end().ends_with("*/"), "still closed: {text}");
+        // Every body line keeps the decoration, so the block is still a block
+        // comment rather than prose that happens to have a marker above it.
+        for line in &edit.lines[1..] {
+            assert!(
+                line.starts_with(" * ") || line.trim() == "*/",
+                "body lines keep their decoration: {line:?} in {:?}",
+                edit.lines
+            );
+        }
+        // And no word was lost in the reflow.
+        let words = |text: &str| {
+            let mut words: Vec<String> = text
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|word| !word.is_empty())
+                .map(str::to_string)
+                .collect();
+            words.sort();
+            words.dedup();
+            words
+        };
+        let before = words("/** alpha beta gamma delta epsilon zeta and more words here second line of the same comment */");
+        let after = words(&text);
+        for word in before {
+            assert!(after.contains(&word), "lost the word {word:?} in {text}");
+        }
     }
 
     #[test]
@@ -759,11 +787,14 @@ mod block_comments_stay_one_block {
                 .iter()
                 .filter(|line| line.contains("/**"))
                 .count(),
-            0,
-            "the continuation must not re-open the comment: {:?}",
+            1,
+            "exactly the one opening line: {:?}",
             edit.lines
         );
-        assert!(edit.lines.last().is_some_and(|line| line.ends_with("*/")));
+        assert!(edit
+            .lines
+            .last()
+            .is_some_and(|line| line.trim_end().ends_with("*/")));
     }
 
     #[test]
@@ -787,5 +818,271 @@ mod block_comments_stay_one_block {
             edit.lines,
             vec!["/* alpha beta gamma delta", " * epsilon zeta */"]
         );
+    }
+}
+
+#[test]
+fn dbg_end2() {
+    use rewrap_core::{maybe_auto_wrap, File, Position, Settings};
+    let ts = File {
+        language: "typescript".into(),
+        path: "x.ts".into(),
+    };
+    let s = Settings {
+        column: 30,
+        tab_width: 4,
+    };
+    let typed = " * epsilon zeta  */";
+    eprintln!(
+        "before */: {:?}",
+        maybe_auto_wrap(
+            &ts,
+            &s,
+            " ",
+            Position {
+                line: 2,
+                character: 15
+            },
+            &["/**", " * alpha beta gamma delta", typed]
+        )
+        .lines
+    );
+    let rust = File {
+        language: "rust".into(),
+        path: "x.rs".into(),
+    };
+    eprintln!(
+        "rust doc: {:?}",
+        maybe_auto_wrap(
+            &rust,
+            &s,
+            " ",
+            Position {
+                line: 1,
+                character: 22
+            },
+            &[
+                "/// alpha beta gamma delta",
+                "/// epsilon zeta epsilon",
+                "fn main() {}"
+            ]
+        )
+        .lines
+    );
+}
+
+/// The last line of a block comment is where people finish a sentence.
+///
+/// It was the one line typing did nothing in: it carries no opening marker, and
+/// its own `*/` balanced the marker above, so the enclosing search decided the
+/// comment was already closed.
+mod typing_on_the_last_line_of_a_block_comment {
+    use rewrap_core::{maybe_auto_wrap, File, Position, Settings};
+
+    fn settings() -> Settings {
+        Settings {
+            column: 30,
+            tab_width: 4,
+        }
+    }
+
+    fn typescript() -> File {
+        File {
+            language: "typescript".into(),
+            path: "x.ts".into(),
+        }
+    }
+
+    fn sample() -> [&'static str; 3] {
+        [
+            "/**",
+            " * alpha beta gamma delta",
+            " * epsilon zeta theta kappa lambda  */",
+        ]
+    }
+
+    #[test]
+    fn typing_before_the_closing_marker_wraps() {
+        let lines = sample();
+        let edit = maybe_auto_wrap(
+            &typescript(),
+            &settings(),
+            " ",
+            Position {
+                line: 2,
+                character: lines[2].len() - 3,
+            },
+            &lines,
+        );
+        assert!(!edit.is_empty(), "typing on the last line did nothing");
+        let text = edit.lines.join("\n");
+        assert!(
+            text.trim_end().ends_with("*/"),
+            "the closing marker stays last: {text}"
+        );
+        assert_eq!(text.matches("/**").count(), 1, "still one comment: {text}");
+        assert!(text.contains("lambda"), "the last word survives: {text}");
+    }
+
+    #[test]
+    fn typing_after_the_closing_marker_wraps_the_same_way() {
+        let lines = sample();
+        let edit = maybe_auto_wrap(
+            &typescript(),
+            &settings(),
+            " ",
+            Position {
+                line: 2,
+                character: lines[2].len(),
+            },
+            &lines,
+        );
+        assert!(!edit.is_empty(), "typing after */ did nothing");
+        let text = edit.lines.join("\n");
+        assert!(text.trim_end().ends_with("*/"), "still closed: {text}");
+        assert_eq!(text.matches("/**").count(), 1, "still one comment: {text}");
+        assert!(text.contains("lambda"), "the word survived: {text}");
+    }
+
+    #[test]
+    fn the_cursor_follows_onto_the_new_line() {
+        let lines = sample();
+        let edit = maybe_auto_wrap(
+            &typescript(),
+            &settings(),
+            " ",
+            Position {
+                line: 2,
+                character: lines[2].len() - 3,
+            },
+            &lines,
+        );
+        let cursor = edit.selections.expect("cursor")[0].active;
+        assert_eq!(cursor.line, 3, "one line below where it was typed");
+        assert!(cursor.character > 0);
+    }
+}
+
+/// A comment is wrapped as a block, not as the line under the cursor.
+///
+/// Reported from use: a hanging indent (`#    `) collapsed to `# ` when a line
+/// in the middle of a block was typed in, because the wrap invented the
+/// continuation prefix from that one line.
+mod the_comment_is_the_unit {
+    use rewrap_core::{maybe_auto_wrap, File, Position, Settings};
+
+    fn settings() -> Settings {
+        Settings {
+            column: 34,
+            tab_width: 4,
+        }
+    }
+
+    fn python() -> File {
+        File {
+            language: "python".into(),
+            path: "x.py".into(),
+        }
+    }
+
+    fn block() -> Vec<&'static str> {
+        vec![
+            "# 2. maybe_auto_wrap has no",
+            "#    automated tests at all. I",
+            "#    checked: zero tests and",
+        ]
+    }
+
+    #[test]
+    fn typing_at_the_end_of_a_hanging_indent_keeps_the_indent() {
+        let mut lines = block();
+        lines[2] = "#    checked: zero tests and something";
+        let edit = maybe_auto_wrap(
+            &python(),
+            &settings(),
+            " ",
+            Position {
+                line: 2,
+                character: "#    checked: zero tests and something".len() - 1,
+            },
+            &lines[..2]
+                .iter()
+                .copied()
+                .chain([lines[2]])
+                .collect::<Vec<_>>(),
+        );
+        assert!(!edit.is_empty(), "typing should have wrapped");
+        for line in &edit.lines {
+            assert!(
+                line.starts_with("# ") || line.starts_with("#    "),
+                "a continuation line lost the marker: {line:?} in {:?}",
+                edit.lines
+            );
+        }
+        let continuation: Vec<&String> = edit
+            .lines
+            .iter()
+            .filter(|line| line.starts_with("#    "))
+            .collect();
+        assert!(
+            continuation.len() >= 2,
+            "the hanging indent was not preserved: {:?}",
+            edit.lines
+        );
+    }
+
+    #[test]
+    fn the_cursor_lands_after_the_word_it_pushed_down() {
+        let lines = [
+            "# 2. maybe_auto_wrap has no",
+            "#    automated tests at all. I",
+            "#    checked: zero tests and something",
+        ];
+        let edit = maybe_auto_wrap(
+            &python(),
+            &Settings {
+                column: 34,
+                tab_width: 4,
+            },
+            " ",
+            Position {
+                line: 2,
+                character: 38,
+            },
+            &lines,
+        );
+        let cursor = edit.selections.expect("cursor")[0].active;
+        let line = &edit.lines[cursor.line as usize];
+        assert_eq!(
+            line.chars().take(cursor.character).collect::<String>(),
+            *line,
+            "the cursor should be at the end of its line"
+        );
+        assert!(
+            line.contains("something"),
+            "cursor moved to the wrong line: {line:?}"
+        );
+    }
+
+    #[test]
+    fn a_single_line_comment_still_wraps_on_its_own() {
+        // The document already holds the typed space, as the editor reports it.
+        let lines = ["# alpha beta gamma delta epsilon zeta eta theta "];
+        let edit = maybe_auto_wrap(
+            &python(),
+            &settings(),
+            " ",
+            Position {
+                line: 0,
+                character: lines[0].len() - 1,
+            },
+            &lines,
+        );
+        assert_eq!(
+            edit.lines,
+            vec!["# alpha beta gamma delta epsilon", "# zeta eta theta "]
+        );
+        let cursor = edit.selections.expect("cursor")[0].active;
+        assert_eq!(cursor.line, 1);
     }
 }

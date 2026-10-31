@@ -427,7 +427,7 @@ pub(crate) fn parts_for(language: &Language, lines: &[&str], at: usize) -> Optio
         return Some(opening_parts(line, &indent, rest, comment));
     }
 
-    let comment = enclosing_block(language, lines, at)?;
+    let comment = open_at(language, lines, at)?;
     let body = &rest;
     // A continuation line normally carries the decoration character
     // (` * text`). When it does not, its own indentation is kept as the prefix
@@ -538,7 +538,7 @@ fn opening_parts(line: &str, indent: &str, rest: &str, comment: &'static Comment
 /// Found by counting markers over the lines above: the last unmatched opening
 /// marker wins, and the longest marker wins a tie, so `/**` is not mistaken for
 /// `/*` in a language that has both.
-fn enclosing_block(language: &Language, lines: &[&str], at: usize) -> Option<&'static Comment> {
+pub(crate) fn open_at(language: &Language, lines: &[&str], at: usize) -> Option<&'static Comment> {
     let mut best: Option<(usize, &'static Comment)> = None;
     for comment in language.comments {
         if comment.kind != Kind::Delimited {
@@ -564,7 +564,12 @@ fn enclosing_block(language: &Language, lines: &[&str], at: usize) -> Option<&'s
                 position += rest.chars().next().map_or(1, char::len_utf8);
             }
         }
-        if depth == 0 {
+        // A line that *ends* the comment has no unmatched opening marker above
+        // it -- the line's own `*/` balances the `/**`. But a comment must have
+        // been open at the start of that line, or the marker would close
+        // nothing. Without this the last line of a block comment was the one
+        // line typing did nothing in.
+        if depth == 0 && !lines[at].contains(comment.end) {
             continue;
         }
         let Some(open) = last_open else { continue };
@@ -579,7 +584,34 @@ fn enclosing_block(language: &Language, lines: &[&str], at: usize) -> Option<&'s
     best.map(|(_, comment)| comment)
 }
 
-#[cfg(test)]
+/// Where the text of a comment line begins, for counting characters past markers.
+///
+/// Auto-wrap tracks the cursor by counting non-space characters, and a marker is
+/// not text: `#` and the space after it must not be counted, or a repeated marker
+/// on a wrapped line would shift the count and the cursor would land on the wrong
+/// word. A hanging indent (`#    text`) is spaces, so it needs no special case --
+/// it is simply not counted.
+pub(crate) fn content_offset(language: &Language, line: &str) -> usize {
+    let indent = crate::markdown::leading_whitespace(line);
+    let rest = &line[indent.len()..];
+    if let Some(comment) = marker_at(language, rest) {
+        let after = &rest[comment.start.trim_end().len()..];
+        let after = after.strip_prefix(' ').unwrap_or(after);
+        return line.len() - after.len();
+    }
+    // A continuation line's decoration character, e.g. ` * text`.
+    for comment in language.comments {
+        if comment.kind != Kind::Delimited || comment.decorate.is_empty() {
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix(comment.decorate) {
+            let after = after.strip_prefix(' ').unwrap_or(after);
+            return line.len() - after.len();
+        }
+    }
+    indent.len()
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{File, Settings};
