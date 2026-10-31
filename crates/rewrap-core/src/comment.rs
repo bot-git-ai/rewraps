@@ -385,17 +385,38 @@ fn string_block(
     Some((chunks, i))
 }
 
-/// Where a line comment's text begins, and the prefix to put on every line.
+/// How one line of a comment splits into marker, text and closing marker.
 ///
-/// Exposed for auto-wrap, which wraps a single line while typing and has to know
-/// which part of it is marker and which is text: the cursor offset it is given
-/// counts from the start of the line, including the marker.
-pub(crate) fn line_comment_parts(language: &Language, line: &str) -> Option<(usize, String)> {
+/// Auto-wrap wraps a single line while typing, so it needs to know which part of
+/// that line is the comment and which is the text -- the cursor offset it is
+/// given counts from the start of the line, marker included. Returning all four
+/// pieces here keeps that knowledge in one place instead of duplicating the
+/// marker rules a second time.
+pub(crate) struct LineParts {
+    /// Where the text starts in the source line.
+    pub content_start: usize,
+    /// Where the text ends -- before the closing marker, when the line had one.
+    pub content_end: usize,
+    /// What goes before the first output line.
+    pub first: String,
+    /// What goes before every later output line.
+    pub cont: String,
+    /// The closing marker, when the source line ended the comment on that line.
+    pub suffix: String,
+}
+
+/// Split one line of a comment, if this line begins a comment that is complete
+/// on that line (or is a plain line comment).
+///
+/// A block comment that continues past this line is deliberately not handled:
+/// its text belongs to several source lines, and choosing which of them the
+/// cursor is in needs the whole block, not the line.
+pub(crate) fn single_line_parts(language: &Language, line: &str) -> Option<LineParts> {
     let indent = crate::markdown::leading_whitespace(line);
     let rest = &line[indent.len()..];
     let mut best: Option<&'static Comment> = None;
     for comment in language.comments {
-        if comment.kind != Kind::Line || !rest.starts_with(comment.start) {
+        if comment.kind == Kind::String || !rest.starts_with(comment.start) {
             continue;
         }
         if let Some(next) = comment.not_followed_by.chars().next() {
@@ -408,23 +429,51 @@ pub(crate) fn line_comment_parts(language: &Language, line: &str) -> Option<(usi
         }
     }
     let comment = best?;
-    let after = &rest[comment.start.len()..];
-    let (separated, body) = match after.strip_prefix(' ') {
+    let after_start = &rest[comment.start.len()..];
+    let (separated, body) = match after_start.strip_prefix(' ') {
         Some(rest) => (true, rest),
-        None => (false, after),
+        None => (false, after_start),
     };
-    let marker = comment.start;
-    let marker_had_space = marker.len() != marker.trim_end().len();
+    let marker = comment.start.trim_end();
+    // The separating space goes back only if one was there; a marker followed
+    // directly by a tab keeps the tab and gains nothing.
+    let marker_had_space = comment.start.len() != marker.len();
     let separator = if separated || marker_had_space {
         " "
     } else {
         ""
     };
-    let prefix = format!("{indent}{}{separator}", marker.trim_end());
-    let start = line.len() - body.len();
-    Some((start, prefix))
+    let first_prefix = format!("{indent}{marker}{separator}");
+
+    match comment.kind {
+        Kind::Line => Some(LineParts {
+            content_start: line.len() - body.len(),
+            content_end: line.len(),
+            first: first_prefix.clone(),
+            cont: first_prefix,
+            suffix: String::new(),
+        }),
+        _ => {
+            // A block comment that closes on this line only; the text stops
+            // before the closing marker, which is emitted separately.
+            let close = body.find(comment.end)?;
+            let cont_marker = if comment.decorate.is_empty() {
+                indent.clone()
+            } else {
+                format!("{indent} {} ", comment.decorate)
+            };
+            Some(LineParts {
+                content_start: line.len() - body.len(),
+                content_end: line.len() - body.len() + close,
+                first: first_prefix,
+                cont: cont_marker,
+                suffix: format!(" {}", comment.end),
+            })
+        }
+    }
 }
 
+#[cfg(test)]
 #[cfg(test)]
 mod tests {
     use crate::{File, Settings};

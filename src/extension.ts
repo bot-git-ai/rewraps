@@ -47,14 +47,6 @@ function columnFor (document: vscode.TextDocument): number | undefined {
   return undefined
 }
 
-/** The column auto-wrap uses when the file has no ruler configured.
- *
- * Chosen rather than asked for: a prompt cannot appear while someone is typing,
- * and doing nothing means auto-wrap silently never fires for anyone who has not
- * set a ruler. Explicit wrap still asks, because there the answer can be given.
- */
-const AUTO_WRAP_FALLBACK_COLUMN = 80
-
 function coreLines (document: vscode.TextDocument): string[] {
   const lines: string[] = []
   for (let i = 0; i < document.lineCount; i++) lines.push(document.lineAt(i).text)
@@ -206,7 +198,11 @@ export function activate (context: vscode.ExtensionContext): void {
       const change = event.contentChanges[0]
       if (change.rangeLength > 0) return
       loadEngine(context)
-      const column = columnFor(event.document) ?? AUTO_WRAP_FALLBACK_COLUMN
+      // No ruler means no column, and auto-wrap does nothing: a prompt cannot
+      // appear while someone is typing, and guessing a column is worse than
+      // leaving the line alone. An explicit wrap asks instead.
+      const column = columnFor(event.document)
+      if (column === undefined) return
       const edit = maybe_auto_wrap(
         event.document.languageId, event.document.uri.fsPath, column,
         Number(editor.options.tabSize) || 4,
@@ -216,12 +212,12 @@ export function activate (context: vscode.ExtensionContext): void {
       const applied = await editor.edit(builder =>
         apply(event.document, edit).forEach(e => builder.replace(e.range, e.newText)))
       if (applied && edit.selections) {
-        // `setSelections` rather than assigning: the edit is async, and an
-        // assignment into the editor's state can be overwritten by whatever the
-        // user typed while it was being applied. This puts the cursor where the
-        // engine says it belongs -- after the word the wrap pushed down.
+        // Applied after the edit resolves, so the position the engine computed
+        // is not shifted by the replacement itself. This is what puts the cursor
+        // after the word the wrap pushed down, instead of leaving it on the line
+        // that just got shorter.
         const s = edit.selections
-        editor.setSelections([new vscode.Selection(s[0], s[1], s[2], s[3])])
+        editor.selections = [new vscode.Selection(s[0], s[1], s[2], s[3])]
       }
     }))
 }

@@ -61,13 +61,12 @@ at a column nobody chose is how text ends up at 80 by accident.
 
 Dismissing that prompt does nothing at all — no wrap, no default.
 
-Auto-wrap never asks. When the file has no ruler of its own it uses **80**, so it
-works out of the box: a prompt cannot appear while you are typing, and doing
-nothing would mean auto-wrap silently never fired. Explicit wrap still asks,
-because there the question can be answered.
+Auto-wrap never asks and never guesses: with no ruler for the file it does
+nothing, and an explicit wrap asks instead.
 
-When a wrap happens, the cursor moves with the text — it ends up after the word
-that was pushed onto the new line, not stranded at the end of the shortened one.
+When you type a word past the column, the text moves to the next line and **the
+cursor goes with it** — it ends up after the word it pushed down, not stranded at
+the end of the line that just got shorter.
 
 ### Auto-wrap
 

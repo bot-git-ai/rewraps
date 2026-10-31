@@ -394,33 +394,51 @@ pub fn maybe_auto_wrap(
         return Edit::empty();
     }
 
-    // A line comment, or a prose line, is wrapped in place: the content is
-    // everything after the marker and the prefix is put back on every line,
-    // which is what lets the cursor be tracked through the break. Anything else
-    // -- a block comment, a docstring, a line of code -- falls back to wrapping
-    // the line as a region and leaving the cursor at the end of it.
-    let marker_parts = resolve(file).and_then(|language| {
+    // A comment that is complete on this line, or a prose line, is wrapped in
+    // place: the text is re-flowed and the markers put back, which is what lets
+    // the cursor be tracked through the break. That covers the cases people
+    // actually type in -- `// ...`, `/// ...`, `/** ... */` -- including the
+    // decorated continuation of a block comment. A docstring or a line of code
+    // falls back, below.
+    let parts = resolve(file).and_then(|language| {
         if language.is_document() {
-            Some((0usize, String::new()))
+            Some(comment::LineParts {
+                content_start: 0,
+                content_end: line.chars().count(),
+                first: String::new(),
+                cont: String::new(),
+                suffix: String::new(),
+            })
         } else {
-            comment::line_comment_parts(language, line)
+            comment::single_line_parts(language, line)
         }
     });
 
-    let Some((content_start, prefix)) = marker_parts else {
+    let Some(parts) = parts else {
         return fallback_auto_wrap(file, settings, lines, at, newline, inserted);
     };
 
-    let content = &line[content_start..];
-    let cursor = typed_end.saturating_sub(line[..content_start].chars().count());
-    let (out, position) = settings.fill_tracked(content, &prefix, &prefix, column, Some(cursor));
+    let cursor = typed_end.saturating_sub(line[..parts.content_start].chars().count());
+    let (mut out, position) = settings.fill_tracked(
+        &line[parts.content_start..parts.content_end],
+        &parts.first,
+        &parts.cont,
+        column,
+        Some(cursor),
+    );
+    if !parts.suffix.is_empty() {
+        if let Some(last) = out.last_mut() {
+            last.push_str(&parts.suffix);
+        }
+    }
     if out.len() == 1 && out[0] == line {
         return Edit::empty();
     }
-    let mut edit = Edit::replace(at.line, at.line + 1, out.clone());
+    let position = cursor_after(&out, at.line, position, newline, inserted);
+    let mut edit = Edit::replace(at.line, at.line + 1, out);
     edit.selections = Some(vec![Selection {
-        anchor: cursor_after(&out, at.line, position, newline, inserted),
-        active: cursor_after(&out, at.line, position, newline, inserted),
+        anchor: position,
+        active: position,
     }]);
     edit
 }

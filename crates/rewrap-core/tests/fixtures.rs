@@ -468,6 +468,45 @@ mod auto_wrap {
     }
 
     #[test]
+    fn a_one_line_block_comment_wraps_with_its_decoration_and_tracks_the_cursor() {
+        let line = "/* alpha beta gamma delta epsilon */";
+        let (out, cursor) = type_at(&[line], 0, 34, " ");
+        assert_eq!(out, vec!["/* alpha beta gamma delta", " * epsilon */"]);
+        // The cursor belongs after "epsilon", on the continuation line -- before
+        // the closing marker, not past it.
+        assert_eq!(cursor, Some((1, " * epsilon".len())));
+    }
+
+    #[test]
+    fn a_javadoc_one_liner_tracks_the_cursor_the_same_way() {
+        let file = File {
+            language: "typescript".into(),
+            path: "x.ts".into(),
+        };
+        let settings = Settings {
+            column: 30,
+            tab_width: 4,
+        };
+        let line = "/** alpha beta gamma delta epsilon */";
+        let edit = maybe_auto_wrap(
+            &file,
+            &settings,
+            " ",
+            Position {
+                line: 0,
+                character: line.len() - 1,
+            },
+            &[line],
+        );
+        assert_eq!(
+            edit.lines,
+            vec!["/** alpha beta gamma delta", " * epsilon */"]
+        );
+        let cursor = edit.selections.expect("cursor")[0].active;
+        assert_eq!((cursor.line, cursor.character), (1, " * epsilon".len()));
+    }
+
+    #[test]
     fn a_paste_is_not_auto_wrapped() {
         let line = "// alpha beta gamma delta epsilon zeta eta theta";
         let (out, cursor) = type_at(&[line], 0, 3, "alpha beta gamma delta epsilon zeta ");
